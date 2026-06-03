@@ -331,21 +331,25 @@ def get_session(account_name: str, username: str = None, password: str = None, p
     """
     # 1. Attempt to load from cached session first
     saved = load_session(account_name)
+    session_valid = False
     if saved:
-        # Validate saved tokens via API
+        log.info(f"🔍 [SESSION] Validating saved session for '{account_name}' via API...")
         if validate_session(saved["shopee_tob_token"], saved["shopee_tob_entity_id"]):
-            return {
-                "shopee_tob_token": saved["shopee_tob_token"],
-                "shopee_tob_entity_id": saved["shopee_tob_entity_id"],
-                "extra_cookies": saved.get("extra_cookies", {})
-            }
-        else:
-            log.warning(f"⚠️ [SESSION] Cached session for '{account_name}' is invalid/expired. Refreshing via browser...")
+            session_valid = True
+
+    run_headless_now = headless
+    login_needed = not session_valid
+    if login_needed and headless:
+        log.info(f"⚠️ [SESSION] Sesi untuk '{account_name}' tidak aktif. Membuka browser dengan antarmuka (headed) untuk login & OTP...")
+        run_headless_now = False
 
     # 2. If cached session is missing or invalid, run Selenium login with retries
     for attempt in range(3):
-        log.info(f"🌐 [BROWSER] Launching isolated browser for '{account_name}' (headless={headless}, attempt={attempt+1}/3)...")
-        driver = _init_driver(headless=headless, account_name=account_name)
+        if login_needed and headless:
+            run_headless_now = False
+
+        log.info(f"🌐 [BROWSER] Launching isolated browser for '{account_name}' (headless={run_headless_now}, attempt={attempt+1}/3)...")
+        driver = _init_driver(headless=run_headless_now, account_name=account_name)
         wait = WebDriverWait(driver, 30)
         session_success = False
 
@@ -431,6 +435,42 @@ def get_session(account_name: str, username: str = None, password: str = None, p
                         time.sleep(1)
                     time.sleep(2)
             
+            # --- TRANSITION HEADED -> HEADLESS AFTER LOGIN ---
+            if login_needed and headless:
+                log.info(f"✅ [SESSION] Login berhasil untuk '{account_name}'. Menyimpan sesi dan beralih ke mode headless...")
+                t, eid = _trigger_and_extract_tokens(driver)
+                if not t:
+                    log.warning(f"⚠️ [SESSION] Token extraction failed before transitioning to headless.")
+                    driver.quit()
+                    continue
+                
+                all_c = get_all_cookies_dict(driver)
+                save_session(account_name, t, eid or "", extra_cookies=all_c)
+                
+                # Close headed browser
+                driver.quit()
+                driver = None
+                
+                # Launch headless browser
+                log.info(f"🌐 [SESSION] Membuka kembali browser dalam mode HEADLESS...")
+                driver = _init_driver(headless=True, account_name=account_name)
+                wait = WebDriverWait(driver, 30)
+                
+                # Load cookies
+                driver.get("https://partner.shopee.co.id/")
+                time.sleep(2)
+                for name, value in all_c.items():
+                    try:
+                        driver.add_cookie({"name": name, "value": value})
+                    except:
+                        pass
+                driver.get(PARTNER_DASHBOARD)
+                time.sleep(4)
+                
+                # Reset flags so subsequent steps run in headless
+                login_needed = False
+                run_headless_now = True
+
             # Ensure we are on dashboard or settings to trigger tokens
             if "/food/dashboard" not in driver.current_url:
                 driver.get(PARTNER_DASHBOARD)
@@ -467,3 +507,4 @@ def refresh_tokens(driver, account_name: str) -> dict:
     all_c = get_all_cookies_dict(driver)
     save_session(account_name, t, eid or "", extra_cookies=all_c)
     return {"shopee_tob_token": t, "shopee_tob_entity_id": eid or "", "extra_cookies": all_c}
+
