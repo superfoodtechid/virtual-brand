@@ -420,6 +420,18 @@ def run_pipeline():
     sheet_names = ['Overall', 'Order_Payment_Details', 'Adjustment', 'Ads_Deduction']
     merged_sheets = {sheet: [] for sheet in sheet_names}
     
+    financial_cols = {
+        'Overall': ['Amount'],
+        'Order_Payment_Details': [
+            'Order Amount', 'Merchant Service Charge', 'PB1', 'Merchant Surcharge Fee',
+            'Merchant Prepaid Subsidy', 'Platform Flash Sale Subsidy',
+            'Merchant Shipping Fee Voucher Subsidy', 'Food Direct Discount',
+            'Merchant Food Voucher Subsidy', 'Subtotal', 'Total', 'Commission', 'Net Income'
+        ],
+        'Adjustment': ['Wallet Adjustment Amount'],
+        'Ads_Deduction': ['Ads Bill Amount', 'Actual Ads Deduction Amount']
+    }
+    
     xlsx_files = glob.glob(os.path.join(report_dir, "*.xlsx"))
     xlsx_files.sort()
     
@@ -428,13 +440,12 @@ def run_pipeline():
         s = str(val).strip()
         if not s or s == '-': return 0
         
-        has_dot = '.' in s
+        s_cleaned = s.replace('.', '')
+        if ',' in s_cleaned:
+            s_cleaned = s_cleaned.split(',')[0]
+            
         try:
-            num = float(s.replace(',', '.'))
-            if has_dot:
-                return int(round(num * 1000))
-            else:
-                return int(num)
+            return int(s_cleaned)
         except:
             return 0
             
@@ -449,8 +460,9 @@ def run_pipeline():
                 if sheet in xls.sheet_names:
                     df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
                     if not df.empty:
-                        if 'Amount' in df.columns:
-                            df['Amount'] = df['Amount'].apply(clean_shopee_monetary)
+                        for col in financial_cols.get(sheet, []):
+                            if col in df.columns:
+                                df[col] = df[col].apply(clean_shopee_monetary)
                         df.insert(0, 'Merchant Filter Name', filename)
                         merged_sheets[sheet].append(df)
         except Exception as e:
