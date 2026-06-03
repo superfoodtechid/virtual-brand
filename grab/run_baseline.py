@@ -220,13 +220,13 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
         log.info("  ✓ ALL ACCOUNTS PROCESSED SUCCESSFULLY")
     log.info("="*60)
 
-    # ── Merging Phase to MASTER.xlsx ──
-    log.info("📊 Merging all downloaded VB files to MASTER.xlsx...")
+    # ── Merging Phase to 0Master.xlsx ──
+    log.info("📊 Merging all downloaded VB files to 0Master.xlsx...")
     all_data = []
     
     xlsx_files = sorted(laporan_dir.glob("*.xlsx"))
     for fpath in xlsx_files:
-        if fpath.name.startswith("MASTER"):
+        if fpath.name.startswith("MASTER") or fpath.name.startswith("0Master"):
             continue
         try:
             df = pd.read_excel(fpath, dtype=str)
@@ -238,16 +238,16 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
             
     if all_data:
         master_df = pd.concat(all_data, ignore_index=True)
-        master_xlsx = laporan_dir / "MASTER.xlsx"
+        master_xlsx = laporan_dir / "0Master.xlsx"
         version = 1
         while master_xlsx.exists():
             version += 1
-            master_xlsx = laporan_dir / f"MASTER-{version:02d}.xlsx"
+            master_xlsx = laporan_dir / f"0Master-{version:02d}.xlsx"
             
         master_df.to_excel(master_xlsx, index=False)
         log.info(f"✅ Successfully merged into: {master_xlsx.name}")
     else:
-        log.warning("⚠️ No valid data found to merge into MASTER.")
+        log.warning("⚠️ No valid data found to merge into 0Master.")
 
     log.info("🎉 SUCCESS! Semua laporan mentah VB telah berhasil diunduh ke folder laporan dan di-merge.")
 

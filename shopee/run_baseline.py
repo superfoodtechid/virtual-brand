@@ -415,8 +415,8 @@ def run_pipeline():
                 except Exception as e:
                     log.error(f"❌ [PROGRESS] Portal '{portal['account_name']}' raised exception: {e}")
 
-    # ── 3. Phase 3: Merging to MASTER.xlsx ──
-    log.info("📊 [PROGRESS] PHASE 3: Merging all downloaded VB files to MASTER.xlsx...")
+    # ── 3. Phase 3: Merging to 0Master.xlsx ──
+    log.info("📊 [PROGRESS] PHASE 3: Merging all downloaded VB files to 0Master.xlsx...")
     all_data = []
     
     xlsx_files = glob.glob(os.path.join(report_dir, "*.xlsx"))
@@ -439,7 +439,7 @@ def run_pipeline():
             
     for fpath in xlsx_files:
         filename = os.path.basename(fpath)
-        if filename.startswith("MASTER"):
+        if filename.startswith("MASTER") or filename.startswith("0Master"):
             continue
             
         try:
@@ -454,18 +454,18 @@ def run_pipeline():
             
     if all_data:
         master_df = pd.concat(all_data, ignore_index=True)
-        master_filepath = os.path.join(report_dir, "MASTER.xlsx")
+        master_filepath = os.path.join(report_dir, "0Master.xlsx")
         version = 1
         while os.path.exists(master_filepath):
             version += 1
-            master_filepath = os.path.join(report_dir, f"MASTER-{version:02d}.xlsx")
+            master_filepath = os.path.join(report_dir, f"0Master-{version:02d}.xlsx")
             
         master_df.to_excel(master_filepath, index=False)
         log.info(f"✅ Successfully merged into: {os.path.basename(master_filepath)}")
     else:
         log.warning("⚠️ No valid data found to merge into MASTER.")
 
-    log.info("🎉 SUCCESS! Semua laporan mentah VB telah berhasil diunduh ke folder laporan dan di-merge ke MASTER.")
+    log.info("🎉 SUCCESS! Semua laporan mentah VB telah berhasil diunduh ke folder laporan dan di-merge ke 0Master.")
 
 if __name__ == "__main__":
     run_pipeline()
