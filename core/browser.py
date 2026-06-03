@@ -339,13 +339,12 @@ def get_session(account_name: str, username: str = None, password: str = None, p
 
     run_headless_now = headless
     login_needed = not session_valid
-    if login_needed and headless:
-        log.info(f"⚠️ [SESSION] Sesi untuk '{account_name}' tidak aktif. Membuka browser dengan antarmuka (headed) untuk login & OTP...")
-        run_headless_now = False
 
     # 2. If cached session is missing or invalid, run Selenium login with retries
     for attempt in range(3):
-        if login_needed and headless:
+        # We start with the configured headless mode to check if browser is already logged in
+        if attempt > 0:
+            # If attempt > 0, it means the first check failed and login/OTP is required, so we force headed
             run_headless_now = False
 
         log.info(f"🌐 [BROWSER] Launching isolated browser for '{account_name}' (headless={run_headless_now}, attempt={attempt+1}/3)...")
@@ -387,6 +386,16 @@ def get_session(account_name: str, username: str = None, password: str = None, p
                         is_logged_in = True
 
             if not is_logged_in:
+                # If we are currently headless, but need login/OTP, relaunch headed!
+                if run_headless_now:
+                    log.info(f"⚠️ [SESSION] Sesi untuk '{account_name}' tidak aktif. Membuka browser dengan antarmuka (headed) untuk login & OTP...")
+                    driver.quit()
+                    run_headless_now = False
+                    driver = _init_driver(headless=False, account_name=account_name)
+                    wait = WebDriverWait(driver, 30)
+                    driver.get(PARTNER_DASHBOARD)
+                    time.sleep(4)
+
                 log.info(f"⚠️ [SESSION] Logging in to '{account_name}'...")
                 if "/login" not in driver.current_url.lower() and "authenticate" not in driver.current_url.lower():
                     driver.get("https://partner.shopee.co.id/login")
@@ -436,7 +445,7 @@ def get_session(account_name: str, username: str = None, password: str = None, p
                     time.sleep(2)
             
             # --- TRANSITION HEADED -> HEADLESS AFTER LOGIN ---
-            if login_needed and headless:
+            if login_needed and headless and not run_headless_now:
                 log.info(f"✅ [SESSION] Login berhasil untuk '{account_name}'. Menyimpan sesi dan beralih ke mode headless...")
                 t, eid = _trigger_and_extract_tokens(driver)
                 if not t:
