@@ -1,0 +1,25 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Reports / Outputs
+laporan/
+downloads/
+logs/
+*.csv
+*.xlsx
+
+# Credentials & Secrets
+.env
+*credentials*.json
+session_*.json
+sessions/
+data/*_cache.csv

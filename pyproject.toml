@@ -1,0 +1,20 @@
+[project]
+name = "task-vb"
+version = "1.0.0"
+description = "Virtual Brand (VB) Transaction Pipeline - Grab & Shopee"
+requires-python = ">=3.12"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.2",
+    "playwright>=1.44.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
+    "selenium",
+    "webdriver-manager",
+    "undetected-chromedriver",
+    "rich",
+    "filelock>=3.29.0",
+]
+
+[tool.uv]
+managed = true
