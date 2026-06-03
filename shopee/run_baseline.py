@@ -417,7 +417,8 @@ def run_pipeline():
 
     # ── 3. Phase 3: Merging to 0Master.xlsx ──
     log.info("📊 [PROGRESS] PHASE 3: Merging all downloaded VB files to 0Master.xlsx...")
-    all_data = []
+    sheet_names = ['Overall', 'Order_Payment_Details', 'Adjustment', 'Ads_Deduction']
+    merged_sheets = {sheet: [] for sheet in sheet_names}
     
     xlsx_files = glob.glob(os.path.join(report_dir, "*.xlsx"))
     xlsx_files.sort()
@@ -443,24 +444,35 @@ def run_pipeline():
             continue
             
         try:
-            df = pd.read_excel(fpath, dtype=str)
-            if not df.empty:
-                if 'Amount' in df.columns:
-                    df['Amount'] = df['Amount'].apply(clean_shopee_monetary)
-                df.insert(0, 'Merchant Filter Name', filename)
-                all_data.append(df)
+            xls = pd.ExcelFile(fpath)
+            for sheet in sheet_names:
+                if sheet in xls.sheet_names:
+                    df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                    if not df.empty:
+                        if 'Amount' in df.columns:
+                            df['Amount'] = df['Amount'].apply(clean_shopee_monetary)
+                        df.insert(0, 'Merchant Filter Name', filename)
+                        merged_sheets[sheet].append(df)
         except Exception as e:
             log.warning(f"⚠️ Failed to read {filename} for merging: {e}")
             
-    if all_data:
-        master_df = pd.concat(all_data, ignore_index=True)
+    has_data = any(len(dfs) > 0 for dfs in merged_sheets.values())
+    if has_data:
         master_filepath = os.path.join(report_dir, "0Master.xlsx")
         version = 1
         while os.path.exists(master_filepath):
             version += 1
             master_filepath = os.path.join(report_dir, f"0Master-{version:02d}.xlsx")
             
-        master_df.to_excel(master_filepath, index=False)
+        with pd.ExcelWriter(master_filepath, engine='openpyxl') as writer:
+            for sheet in sheet_names:
+                dfs = merged_sheets[sheet]
+                if dfs:
+                    sheet_df = pd.concat(dfs, ignore_index=True)
+                    sheet_df.to_excel(writer, sheet_name=sheet, index=False)
+                else:
+                    pd.DataFrame(columns=['Merchant Filter Name']).to_excel(writer, sheet_name=sheet, index=False)
+                    
         log.info(f"✅ Successfully merged into: {os.path.basename(master_filepath)}")
     else:
         log.warning("⚠️ No valid data found to merge into MASTER.")
