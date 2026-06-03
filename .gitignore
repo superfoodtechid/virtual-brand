@@ -23,5 +23,9 @@ logs/
 session.json
 session_*.json
 sessions/
-data/chrome_profile*/
+shopee/sessions/
+grab/sessions/
+data/chrome_profile/
+data/chrome_profile_*/
+data/chrome_profiles/
 data/*_cache.csv
