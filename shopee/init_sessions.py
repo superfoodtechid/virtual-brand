@@ -32,6 +32,29 @@ def get_vb_portals() -> list:
     cred_file = Path(__file__).parent / "credentials_vb.json"
     portals = []
     
+    # Check config.json for use_local_credentials
+    use_local = False
+    try:
+        for parent in Path(__file__).resolve().parents:
+            config_file = parent / "config.json"
+            if config_file.exists():
+                with open(config_file, "r") as f:
+                    use_local = json.load(f).get("use_local_credentials", False)
+                break
+    except Exception:
+        pass
+
+    if use_local:
+        log.info("📂 Using local credentials cache as configured in config.json")
+        if cred_file.exists():
+            try:
+                with open(cred_file, "r") as f:
+                    cached = json.load(f)
+                    return cached.get("portals", [])
+            except Exception as err:
+                log.error(f"❌ Failed to read cache: {err}")
+        return []
+    
     log.info("🌐 Fetching portal credentials dynamically from oogle Sheets...")
     try:
         df = pd.read_csv(CRED_URL)
