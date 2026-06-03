@@ -2,5 +2,5 @@
   "headless_grab": true,
   "headless_vb": true,
   "max_concurrency": 3,
-  "use_local_credentials": true
+  "use_local_credentials": false
 }
