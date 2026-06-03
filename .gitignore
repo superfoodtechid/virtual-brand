@@ -20,6 +20,8 @@ logs/
 # Credentials & Secrets
 .env
 *credentials*.json
+session.json
 session_*.json
 sessions/
+data/chrome_profile*/
 data/*_cache.csv

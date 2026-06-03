@@ -159,44 +159,24 @@ def run_shopee_vb(start_date: str, end_date: str, merchant_filter: str = None):
     return result.returncode == 0
 
 def interactive_mode():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    banner()
-
-    print(f"  {BOLD}Pilih platform:{RESET}")
-    print(f"    {GREEN}[1]{RESET} Grab")
-    print(f"    {MAGENTA}[2]{RESET} Shopee")
-    print(f"    {CYAN}[3]{RESET} Kedua Platform (Grab + Shopee)")
-    print()
-
-    while True:
-        choice = input(f"  {BOLD}Pilihan (1/2/3):{RESET} ").strip()
-        if choice in ("1", "2", "3"):
-            break
-        print(f"  {RED}Input tidak valid. Masukkan 1, 2, atau 3.{RESET}")
-
-    platform_map = {"1": "grab", "2": "shopee", "3": "all"}
-    platform = platform_map[choice]
-
-    print(f"\n  {BOLD}Pilih cakupan outlet:{RESET}")
-    print(f"    {GREEN}[1]{RESET} Pilih semua outlet")
-    print(f"    {YELLOW}[2]{RESET} Pilih custom (Filter spesifik){RESET}")
-    print()
-
-    while True:
-        scope_choice = input(f"  {BOLD}Pilihan (1/2):{RESET} ").strip()
-        if scope_choice in ("1", "2"):
-            break
-        print(f"  {RED}Input tidak valid. Masukkan 1 atau 2.{RESET}")
-
+    state = "platform"
+    
+    platform = None
+    scope_choice = None
     outlet = []
     branch = []
     shopee_merchant = []
-
-    if scope_choice == "2":
+    start_date = None
+    end_date = None
+    
+    df_vb = None
+    def load_df():
+        nonlocal df_vb
+        if df_vb is not None:
+            return df_vb
         import pandas as pd
         import requests
         import io
-
         print(f"\n  {CYAN}[INFO] Mengunduh daftar merchant VB terbaru dari Google Sheets...{RESET}")
         CSV_URL_MAIN = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
         try:
@@ -204,101 +184,205 @@ def interactive_mode():
             resp_main.raise_for_status()
             df_main = pd.read_csv(io.StringIO(resp_main.text))
             df_vb = df_main[df_main["Role"].str.strip().str.lower() == "owner"] if "Role" in df_main.columns else df_main
+            return df_vb
         except Exception as e:
             print(f"  {RED}[ERROR] Gagal mengunduh Google Sheets: {e}{RESET}")
             sys.exit(1)
 
-        # Grab Filters
-        if platform in ("grab", "all"):
-            df_grab = df_vb[df_vb["Aplikasi"].str.contains("Grab", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
-            if not df_grab.empty:
-                outlets_list = sorted(df_grab["Nama Outlet"].dropna().unique())
-                print(f"\n  {BOLD}Pilih Outlet Grab VB:{RESET}")
-                for idx, o_name in enumerate(outlets_list):
-                    print(f"    {GREEN}[{idx + 1}]{RESET} {o_name}")
-                print()
-                while True:
-                    try:
-                        o_choices = input(f"  {BOLD}Pilih nomor outlet Grab (contoh: 1,3 atau 'all'):{RESET} ").strip()
-                        if o_choices.lower() == "all":
-                            outlet = outlets_list
-                            break
-                        else:
-                            indices = [int(x.strip()) for x in o_choices.split(",") if x.strip()]
-                            if all(1 <= i <= len(outlets_list) for i in indices):
-                                outlet = [outlets_list[i - 1] for i in indices]
-                                break
-                    except ValueError: pass
-                    print(f"  {RED}Pilihan tidak valid.{RESET}")
-            else:
-                print(f"  {RED}[WARNING] Tidak ditemukan outlet Grab VB di Google Sheets.{RESET}")
-
-        # Shopee Filters
-        if platform in ("shopee", "all"):
-            df_shopee = df_vb[df_vb["Aplikasi"].str.contains("Shopee", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
-            if not df_shopee.empty:
-                merchants = sorted(df_shopee["Merchant Name"].dropna().unique())
-                print(f"\n  {BOLD}Pilih Merchant ShopeeFood VB:{RESET}")
-                for idx, m_name in enumerate(merchants):
-                    print(f"    {GREEN}[{idx + 1}]{RESET} {m_name}")
-                print()
-                while True:
-                    try:
-                        m_choices = input(f"  {BOLD}Pilih nomor merchant Shopee (contoh: 1,2 atau 'all'):{RESET} ").strip()
-                        if m_choices.lower() == "all":
-                            shopee_merchant = merchants
-                            break
-                        else:
-                            indices = [int(x.strip()) for x in m_choices.split(",") if x.strip()]
-                            if all(1 <= i <= len(merchants) for i in indices):
-                                shopee_merchant = [merchants[i - 1] for i in indices]
-                                break
-                    except ValueError: pass
-                    print(f"  {RED}Pilihan tidak valid.{RESET}")
-            else:
-                print(f"  {RED}[WARNING] Tidak ditemukan merchant Shopee VB di Google Sheets.{RESET}")
-
-    # Date Range Selection
-    print()
-    today = datetime.now()
-    days_since_monday = today.weekday()
-    recent_monday = today - timedelta(days=days_since_monday)
-    previous_monday = recent_monday - timedelta(days=7)
-    
-    default_end = recent_monday.strftime("%Y-%m-%d")
-    default_start = previous_monday.strftime("%Y-%m-%d")
-    
     while True:
-        date_choice = input(f"  {BOLD}Gunakan tanggal 7 hari terakhir (Senin-Senin: {default_start} s/d {default_end})? (y/n):{RESET} ").strip().lower()
-        if date_choice in ("y", "yes", "n", "no"):
-            break
-        print(f"  {RED}Input tidak valid. Masukkan y atau n.{RESET}")
+        if state == "platform":
+            os.system('cls' if os.name == 'nt' else 'clear')
+            banner()
+            print(f"  {BOLD}Pilih platform:{RESET}")
+            print(f"    {GREEN}[1]{RESET} Grab")
+            print(f"    {MAGENTA}[2]{RESET} Shopee")
+            print(f"    {CYAN}[3]{RESET} Kedua Platform (Grab + Shopee)")
+            print(f"    {YELLOW}[4]{RESET} Keluar")
+            print()
+            
+            choice = input(f"  {BOLD}Pilihan (1/2/3/4):{RESET} ").strip()
+            if choice == "4":
+                print("  Keluar.")
+                sys.exit(0)
+            elif choice in ("1", "2", "3"):
+                platform_map = {"1": "grab", "2": "shopee", "3": "all"}
+                platform = platform_map[choice]
+                state = "scope"
+            else:
+                print(f"  {RED}Input tidak valid. Masukkan 1, 2, 3, atau 4.{RESET}")
+                time.sleep(1)
 
-    if date_choice in ("y", "yes"):
-        start_date = default_start
-        end_date = default_end
-    else:
-        print()
-        start_input = input(f"  {BOLD}Start date (YYYY-MM-DD){RESET} [{default_start}]: ").strip()
-        end_input   = input(f"  {BOLD}End date   (YYYY-MM-DD){RESET} [{default_end}]: ").strip()
-        start_date = start_input or default_start
-        end_date   = end_input or default_end
+        elif state == "scope":
+            print(f"\n  {BOLD}Pilih cakupan outlet:{RESET}")
+            print(f"    {GREEN}[1]{RESET} Pilih semua outlet")
+            print(f"    {YELLOW}[2]{RESET} Pilih custom (Filter spesifik){RESET}")
+            print(f"    {CYAN}[3]{RESET} Kembali ke pemilihan platform")
+            print()
+            
+            scope_choice = input(f"  {BOLD}Pilihan (1/2/3):{RESET} ").strip()
+            if scope_choice == "3":
+                state = "platform"
+            elif scope_choice == "1":
+                outlet = []
+                branch = []
+                shopee_merchant = []
+                state = "date"
+            elif scope_choice == "2":
+                df_vb = load_df()
+                if platform in ("grab", "all"):
+                    state = "grab_outlet"
+                else:
+                    state = "shopee_merchant"
+            else:
+                print(f"  {RED}Input tidak valid. Masukkan 1, 2, atau 3.{RESET}")
 
-    # Confirm
-    print(f"\n  {CYAN}{'─'*50}{RESET}")
-    print(f"  Platform : {BOLD}{platform}{RESET}")
-    if scope_choice == "2":
-        if outlet: print(f"  Grab Outlet : {BOLD}{outlet}{RESET}")
-        if shopee_merchant: print(f"  Shopee Merchant : {BOLD}{shopee_merchant}{RESET}")
-    else:
-        print(f"  Outlet   : {BOLD}Semua Outlet VB{RESET}")
-    print(f"  Start    : {BOLD}{start_date}{RESET}")
-    print(f"  End      : {BOLD}{end_date}{RESET}")
-    print(f"  {CYAN}{'─'*50}{RESET}")
+        elif state == "grab_outlet":
+            df_grab = df_vb[df_vb["Aplikasi"].str.contains("Grab", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
+            if df_grab.empty:
+                print(f"  {RED}[WARNING] Tidak ditemukan outlet Grab VB di Google Sheets.{RESET}")
+                state = "scope"
+                continue
+                
+            outlets_list = sorted(df_grab["Nama Outlet"].dropna().unique())
+            print(f"\n  {BOLD}Pilih Outlet Grab VB:{RESET}")
+            for idx, o_name in enumerate(outlets_list):
+                print(f"    {GREEN}[{idx + 1}]{RESET} {o_name}")
+            print(f"    {CYAN}[b]{RESET} Kembali ke cakupan outlet")
+            print()
+            
+            o_choices = input(f"  {BOLD}Pilih nomor outlet Grab (contoh: 1,3 atau 'all' atau 'b'):{RESET} ").strip()
+            if o_choices.lower() == "b":
+                state = "scope"
+            elif o_choices.lower() == "all":
+                outlet = outlets_list
+                if platform == "all":
+                    state = "shopee_merchant"
+                else:
+                    state = "date"
+            else:
+                try:
+                    indices = [int(x.strip()) for x in o_choices.split(",") if x.strip()]
+                    if all(1 <= i <= len(outlets_list) for i in indices):
+                        outlet = [outlets_list[i - 1] for i in indices]
+                        if platform == "all":
+                            state = "shopee_merchant"
+                        else:
+                            state = "date"
+                    else:
+                        print(f"  {RED}Pilihan tidak valid.{RESET}")
+                except ValueError:
+                    print(f"  {RED}Pilihan tidak valid.{RESET}")
 
-    confirm = input(f"\n  {BOLD}Lanjutkan? (Y/n):{RESET} ").strip().lower()
-    if confirm in ("n", "no"):
-        sys.exit(0)
+        elif state == "shopee_merchant":
+            df_shopee = df_vb[df_vb["Aplikasi"].str.contains("Shopee", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
+            if df_shopee.empty:
+                print(f"  {RED}[WARNING] Tidak ditemukan merchant Shopee VB di Google Sheets.{RESET}")
+                if platform == "all":
+                    state = "grab_outlet"
+                else:
+                    state = "scope"
+                continue
+                
+            merchants = sorted(df_shopee["Merchant Name"].dropna().unique())
+            print(f"\n  {BOLD}Pilih Merchant ShopeeFood VB:{RESET}")
+            for idx, m_name in enumerate(merchants):
+                print(f"    {GREEN}[{idx + 1}]{RESET} {m_name}")
+            print(f"    {CYAN}[b]{RESET} Kembali ke menu sebelumnya")
+            print()
+            
+            m_choices = input(f"  {BOLD}Pilih nomor merchant Shopee (contoh: 1,2 atau 'all' atau 'b'):{RESET} ").strip()
+            if m_choices.lower() == "b":
+                if platform == "all":
+                    state = "grab_outlet"
+                else:
+                    state = "scope"
+            elif m_choices.lower() == "all":
+                shopee_merchant = merchants
+                state = "date"
+            else:
+                try:
+                    indices = [int(x.strip()) for x in m_choices.split(",") if x.strip()]
+                    if all(1 <= i <= len(merchants) for i in indices):
+                        shopee_merchant = [merchants[i - 1] for i in indices]
+                        state = "date"
+                    else:
+                        print(f"  {RED}Pilihan tidak valid.{RESET}")
+                except ValueError:
+                    print(f"  {RED}Pilihan tidak valid.{RESET}")
+
+        elif state == "date":
+            print()
+            today = datetime.now()
+            days_since_monday = today.weekday()
+            recent_monday = today - timedelta(days=days_since_monday)
+            previous_monday = recent_monday - timedelta(days=7)
+            
+            default_end = recent_monday.strftime("%Y-%m-%d")
+            default_start = previous_monday.strftime("%Y-%m-%d")
+            
+            print(f"  {BOLD}Pilih rentang tanggal:{RESET}")
+            print(f"    {GREEN}[1]{RESET} Gunakan 7 hari terakhir (Senin-Senin: {default_start} s/d {default_end})")
+            print(f"    {YELLOW}[2]{RESET} Input manual")
+            print(f"    {CYAN}[3]{RESET} Kembali ke menu sebelumnya")
+            print()
+            
+            date_choice = input(f"  {BOLD}Pilihan (1/2/3):{RESET} ").strip()
+            if date_choice == "3":
+                if scope_choice == "1":
+                    state = "scope"
+                else:
+                    if platform == "shopee":
+                        state = "shopee_merchant"
+                    elif platform == "grab":
+                        state = "grab_outlet"
+                    else: # all
+                        state = "shopee_merchant"
+            elif date_choice == "1":
+                start_date = default_start
+                end_date = default_end
+                state = "confirm"
+            elif date_choice == "2":
+                print()
+                start_input = input(f"  {BOLD}Start date (YYYY-MM-DD){RESET} [{default_start}] (atau ketik 'b' untuk kembali): ").strip()
+                if start_input.lower() == 'b':
+                    continue
+                end_input   = input(f"  {BOLD}End date   (YYYY-MM-DD){RESET} [{default_end}] (atau ketik 'b' untuk kembali): ").strip()
+                if end_input.lower() == 'b':
+                    continue
+                start_date = start_input or default_start
+                end_date   = end_input or default_end
+                state = "confirm"
+            else:
+                print(f"  {RED}Input tidak valid.{RESET}")
+
+        elif state == "confirm":
+            print(f"\n  {CYAN}{'─'*50}{RESET}")
+            print(f"  Platform : {BOLD}{platform}{RESET}")
+            if scope_choice == "2":
+                if outlet: print(f"  Grab Outlet : {BOLD}{outlet}{RESET}")
+                if shopee_merchant: print(f"  Shopee Merchant : {BOLD}{shopee_merchant}{RESET}")
+            else:
+                print(f"  Outlet   : {BOLD}Semua Outlet VB{RESET}")
+            print(f"  Start    : {BOLD}{start_date}{RESET}")
+            print(f"  End      : {BOLD}{end_date}{RESET}")
+            print(f"  {CYAN}{'─'*50}{RESET}")
+            
+            print(f"  {BOLD}Konfirmasi tindakan:{RESET}")
+            print(f"    {GREEN}[1]{RESET} Lanjutkan")
+            print(f"    {YELLOW}[2]{RESET} Kembali ke pemilihan tanggal")
+            print(f"    {RED}[3]{RESET} Batal dan Keluar")
+            print()
+            
+            confirm = input(f"  {BOLD}Pilihan (1/2/3):{RESET} ").strip()
+            if confirm == "1":
+                break
+            elif confirm == "2":
+                state = "date"
+            elif confirm == "3":
+                print("  Dibatalkan.")
+                sys.exit(0)
+            else:
+                print(f"  {RED}Pilihan tidak valid.{RESET}")
 
     return platform, start_date, end_date, outlet, branch, shopee_merchant
 
