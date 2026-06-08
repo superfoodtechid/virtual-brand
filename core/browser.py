@@ -35,6 +35,7 @@ PARTNER_DASHBOARD = "https://partner.shopee.co.id/food/dashboard"
 TOKEN_TRIGGER_PAGE = "https://partner.shopee.co.id/settings/shopee-food/business-hours-settings"
 VALIDATE_URL = "https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo"
 SHOPEE_IMG_BASE = "https://down-id.img.susercontent.com/file"
+LOGOUT_KEYWORDS = ["log out", "logout", "keluar", "sign out", "signout"]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -169,6 +170,367 @@ def _trigger_and_extract_tokens(driver) -> tuple:
     except: pass
     return extract_tokens_from_driver(driver)
 
+
+def _detect_and_recover_logout(driver) -> bool:
+    """
+    Safety-net: detects if the browser accidentally got logged out.
+    Attempts re-entry using the existing Chrome profile cookies (no OTP needed).
+    Returns True if recovery succeeded, False otherwise.
+    """
+    current = driver.current_url.lower()
+    logged_out = (
+        "/login" in current
+        or "/authenticate/login" in current
+        or "about:blank" in current
+    )
+    if not logged_out:
+        return False  # Not logged out — nothing to do
+
+    log.warning("⚠️  [LOGOUT-RECOVERY] Accidental logout detected! Trying to recover via Chrome profile...")
+    try:
+        driver.get(PARTNER_DASHBOARD)
+        time.sleep(5)
+        recovered_url = driver.current_url.lower()
+        if "dashboard" in recovered_url or "merchant-selector" in recovered_url:
+            log.info("✅ [LOGOUT-RECOVERY] Recovered without OTP — Chrome profile cookies still valid.")
+            return True
+    except Exception as err:
+        log.warning(f"⚠️  [LOGOUT-RECOVERY] Recovery attempt failed: {err}")
+
+    log.warning("⚠️  [LOGOUT-RECOVERY] Could not recover automatically — full re-login may be needed.")
+    return False
+
+def _deliberate_logout_and_relogin(
+    driver,
+    username: str = None,
+    password: str = None,
+    phone:    str = None,
+) -> bool:
+    """
+    Intentional recovery strategy for when merchant cannot be detected.
+
+    Flow:
+      1. Click the profile area  →  open dropdown
+      2. Click 'Log Out' from the dropdown
+      3. Click the confirmation 'Log Out' button
+      4. Try Chrome profile auto-login (fast path, no OTP)
+      5. Fallback: enter credentials (username/password) via _perform_login()
+      Returns True if back on the portal, False on complete failure.
+    """
+    log.info("🔄 [LOGOUT-RELOGIN] Initiating deliberate logout for clean session recovery...")
+    try:
+        # ── Step 1: Navigate to a page that has the profile dropdown ───
+        if "/food/" not in driver.current_url and "/settings/" not in driver.current_url:
+            driver.get(PARTNER_DASHBOARD)
+            time.sleep(3)
+
+        # ── Step 2: Open the profile/merchantName dropdown with retries ───
+        profile_clicked = False
+        for attempt in range(3):
+            # Dismiss any blocking overlays/notifications
+            driver.execute_script("""
+                document.querySelectorAll('.ant-notification, .ant-modal, .ant-notification-notice, .ant-message').forEach(el => el.remove());
+            """)
+            
+            # Find the WebElement via JS returning it
+            profile_el = driver.execute_script("""
+                var profileEl = null;
+                // 1. Try specific CSS selectors first
+                for (var sel of ['.merchantName', '.user-info', '.ant-dropdown-trigger', '.ant-dropdown-link']) {
+                    var el = document.querySelector(sel);
+                    if (el && el.offsetHeight > 0) {
+                        profileEl = el;
+                        break;
+                    }
+                }
+                // 2. Search for element containing "Admin:"
+                if (!profileEl) {
+                    var elements = Array.from(document.querySelectorAll('span, p, div, li, a'));
+                    for (var el of elements) {
+                        var text = (el.innerText || '').trim();
+                        if (text.includes('Admin:') && text.length < 30 && el.offsetHeight > 0) {
+                            profileEl = el;
+                            break;
+                        }
+                    }
+                }
+                // 3. Fallback to last .ant-dropdown-trigger
+                if (!profileEl) {
+                    var triggers = Array.from(document.querySelectorAll('.ant-dropdown-trigger, .ant-dropdown-link'));
+                    if (triggers.length > 0) {
+                        profileEl = triggers[triggers.length - 1];
+                    }
+                }
+                return profileEl;
+            """)
+            
+            if profile_el:
+                log.info(f"  📍 Found profile menu element (Attempt {attempt+1}). Dispatching JS click...")
+                # Dispatch JS events
+                driver.execute_script("""
+                    var el = arguments[0];
+                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
+                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
+                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+                    el.dispatchEvent(ev1);
+                    el.dispatchEvent(ev2);
+                    el.dispatchEvent(ev3);
+                    el.dispatchEvent(ev4);
+                    el.dispatchEvent(ev5);
+                """, profile_el)
+                time.sleep(1.5)
+                
+                # Check if dropdown is visible (ignoring hidden parents)
+                has_dropdown = driver.execute_script("""
+                    var targets = ['log out', 'logout', 'keluar'];
+                    var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
+                    for (var el of candidates) {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                        var text = (el.innerText || '').trim().toLowerCase();
+                        if (targets.some(function(k){ return text.includes(k); })) {
+                            return true;
+                        }
+                    }
+                    return false;
+                """)
+                
+                if not has_dropdown:
+                    log.info("  ⚠️ JS click did not reveal dropdown. Retrying with Selenium native ActionChains hover/click...")
+                    try:
+                        actions = ActionChains(driver)
+                        actions.move_to_element(profile_el).perform()
+                        time.sleep(0.5)
+                        actions.click(profile_el).perform()
+                        time.sleep(1.5)
+                        
+                        has_dropdown = driver.execute_script("""
+                            var targets = ['log out', 'logout', 'keluar'];
+                            var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
+                            for (var el of candidates) {
+                                var rect = el.getBoundingClientRect();
+                                if (rect.width === 0 || rect.height === 0) continue;
+                                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                                var text = (el.innerText || '').trim().toLowerCase();
+                                if (targets.some(function(k){ return text.includes(k); })) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        """)
+                    except Exception as e:
+                        log.warning(f"  ⚠️ ActionChains failed: {e}")
+                
+                if has_dropdown:
+                    log.info("  ✅ Dropdown is now visible.")
+                    profile_clicked = True
+                    break
+                else:
+                    log.warning("  ⚠️ Dropdown menu elements not visible yet. Retrying...")
+            else:
+                log.warning(f"  ⚠️ Profile element not found on page (Attempt {attempt+1}). Retrying...")
+            time.sleep(1.5)
+
+        if not profile_clicked:
+            log.warning("  ⚠️ Profile element or dropdown could not be opened.")
+            return False
+
+        # ── Step 3: Find and click 'Log Out' in the dropdown ────────────
+        logout_el = driver.execute_script("""
+            var targets = ['log out', 'logout', 'keluar'];
+            var candidates = Array.from(document.querySelectorAll(
+                'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item,'
+                + '[class*="menu-item"], span, div, a'
+            ));
+            for (var el of candidates) {
+                var rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                
+                var text = (el.innerText || '').trim().toLowerCase();
+                if (targets.some(function(k){ return text === k; })) {
+                    // Walk up to the closest interactive wrapper (e.g. li or .ant-dropdown-menu-item)
+                    var clickable = el.closest('li, button, a, [role="menuitem"], .ant-dropdown-menu-item') || el;
+                    return clickable;
+                }
+            }
+            return null;
+        """)
+
+        if not logout_el:
+            log.warning("  ⚠️ 'Log Out' menu item not found in dropdown.")
+            return False
+
+        # Click it using Selenium
+        try:
+            log.info("  👈 Clicking 'Log Out' menu item...")
+            logout_el.click()
+        except Exception:
+            # Fallback to ActionChains
+            try:
+                ActionChains(driver).move_to_element(logout_el).click().perform()
+            except Exception as e:
+                log.warning(f"  ⚠️ Selenium click failed: {e}. Trying JS MouseEvents as fallback...")
+                driver.execute_script("""
+                    var el = arguments[0];
+                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
+                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
+                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+                    el.dispatchEvent(ev1); el.dispatchEvent(ev2); el.dispatchEvent(ev3); el.dispatchEvent(ev4); el.dispatchEvent(ev5);
+                """, logout_el)
+        
+        time.sleep(1.5)  # Wait for confirmation dialog
+
+        # ── Step 4: Click the 'Log Out' confirmation button with retries ────
+        confirm_clicked = False
+        for confirm_attempt in range(5):
+            confirm_el = driver.execute_script("""
+                var targets = ['log out', 'logout', 'keluar'];
+                // ONLY look inside modal containers
+                var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
+                if (!modal) return null;
+                
+                var candidates = Array.from(modal.querySelectorAll('button, .ant-btn, [role="button"]'));
+                for (var btn of candidates) {
+                    var rect = btn.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                    if (targets.some(function(k){ return text === k || text === ('confirm ' + k); })) {
+                        // Walk up to the closest clickable element (e.g. button or .ant-btn)
+                        var clickable = btn.closest('button, [role="button"], a, .ant-btn') || btn;
+                        return clickable;
+                    }
+                }
+                return null;
+            """)
+            
+            if confirm_el:
+                log.info(f"  📍 Found confirmation button on Attempt {confirm_attempt+1}. Clicking...")
+                try:
+                    confirm_el.click()
+                except Exception as e:
+                    log.warning(f"  ⚠️ Selenium click failed: {e}. Trying ActionChains...")
+                    try:
+                        ActionChains(driver).move_to_element(confirm_el).click().perform()
+                    except Exception as e2:
+                        log.warning(f"  ⚠️ ActionChains click failed: {e2}. Trying JS click...")
+                        driver.execute_script("arguments[0].click();", confirm_el)
+                
+                time.sleep(2)
+                # Verify if modal is gone
+                modal_present = driver.execute_script("""
+                    var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
+                    return !!(modal && modal.offsetHeight > 0);
+                """)
+                if not modal_present:
+                    log.info("  ✅ Modal disappeared. Logout confirmed.")
+                    confirm_clicked = True
+                    break
+                else:
+                    log.warning("  ⚠️ Modal is still present after click. Retrying...")
+            else:
+                log.warning(f"  ⚠️ Confirmation button/modal not found yet (Attempt {confirm_attempt+1}). Retrying...")
+                time.sleep(1.5)
+
+        if not confirm_clicked:
+            log.warning("  ⚠️ Confirmation 'Log Out' button could not be clicked via UI.")
+            
+            # --- DEBUG SCREENSHOT JIKA KLIK GAGAL ---
+            try:
+                import os
+                debug_dir = os.path.join(str(Path(__file__).resolve().parent.parent), "data", "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                ss_fail_path = os.path.join(debug_dir, "modal_fail_server.png")
+                driver.save_screenshot(ss_fail_path)
+                log.info(f"  📸 [DEBUG] Screenshot penyebab kegagalan klik disimpan di {ss_fail_path}")
+            except Exception as e:
+                pass
+            # ----------------------------------------
+            
+            log.info("  🛡️ Mengaktifkan 'Soft Session Kill' Fallback (Hanya hapus Cookie Sesi)...")
+            try:
+                # Escape the modal just in case
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+                
+            try:
+                # Hanya hapus cookie autentikasi utama yang menandakan status login
+                auth_cookies = ['SPC_ST', 'SPC_U', 'SPC_T_ID', 'SPC_T_IV']
+                for cookie_name in auth_cookies:
+                    try:
+                        driver.delete_cookie(cookie_name)
+                    except:
+                        pass
+                
+                # Bersihkan cache JWT / state auth dari LocalStorage
+                driver.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                
+                # JANGAN hapus SPC_F atau SPC_EC (Cookie Device Fingerprint) agar tidak trigger OTP!
+                
+                log.info("  ✅ Soft Session Kill dieksekusi. Sesi dibersihkan tanpa menghapus Device Fingerprint.")
+                driver.refresh()
+                time.sleep(3)
+            except Exception as e:
+                log.warning(f"  ⚠️ Soft Session Kill gagal: {e}")
+                return False
+
+        log.info("  ✅ Logout confirmed. Waiting for login page...")
+        time.sleep(3)
+
+        # ── Step 5a: Try Chrome profile auto-login (fast path) ──────────
+        log.info("  🌐 Attempting Chrome profile auto-login...")
+        driver.get(PARTNER_DASHBOARD)
+        time.sleep(5)
+        url_now = driver.current_url.lower()
+        if "dashboard" in url_now or "merchant-selector" in url_now or "onboarding" in url_now:
+            log.info("  ✅ [LOGOUT-RELOGIN] Auto-login via Chrome profile succeeded!")
+            return True
+
+        # ── Step 5b: Fallback — login dengan kredensial ────────────────
+        log.info("  ⚠️ Chrome profile auto-login failed — logging in with credentials...")
+        if not (username and password) and not phone:
+            log.warning("  ⚠️ No credentials provided — cannot complete login.")
+            return False
+
+        # Navigate to login page if not already there
+        current = driver.current_url.lower()
+        if "login" not in current and "authenticate" not in current:
+            driver.get("https://partner.shopee.co.id/login")
+            time.sleep(4)
+
+        wait = WebDriverWait(driver, 30)
+        login_ok = _perform_login(driver, wait, username=username, password=password, phone=phone)
+        if not login_ok:
+            log.error("  ❌ Credential login failed.")
+            return False
+
+        # Wait for dashboard or merchant selector after login
+        time.sleep(3)
+        url_after = driver.current_url.lower()
+        if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
+            log.info("  ✅ [LOGOUT-RELOGIN] Credential login succeeded!")
+            return True
+
+        # Handle merchant-selector page if redirected there post-login
+        for _ in range(10):
+            url_after = driver.current_url.lower()
+            if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
+                log.info("  ✅ [LOGOUT-RELOGIN] Logged in and on portal.")
+                return True
+            time.sleep(1)
+
+        log.warning(f"  ⚠️ [LOGOUT-RELOGIN] Unexpected URL after credential login: {driver.current_url}")
+        return False
+
+    except Exception as e:
+        log.error(f"  ❌ [LOGOUT-RELOGIN] Failed: {e}")
+        return False
 
 # ── Driver Initialization ──────────────────────────────────────────────────────
 
@@ -484,6 +846,42 @@ def get_session(account_name: str, username: str = None, password: str = None, p
             if "/food/dashboard" not in driver.current_url:
                 driver.get(PARTNER_DASHBOARD)
                 time.sleep(2)
+
+            # --- DETECT UNKNOWN MERCHANT / STUCK DASHBOARD ---
+            active_id = None
+            active_name = "Unknown Merchant"
+            try:
+                api_js = '''
+                var done = arguments[arguments.length - 1];
+                let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+                fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-merchant-token': token || '' },
+                    credentials: 'include'
+                })
+                .then(r => r.json())
+                .then(j => done(j.data || null))
+                .catch(() => done(null));
+                '''
+                driver.set_script_timeout(10)
+                user_data = driver.execute_async_script(api_js)
+                if user_data:
+                    active_id = str(user_data.get("merchantId") or "")
+                    active_name = user_data.get("merchantName") or "Unknown Merchant"
+            except: pass
+            
+            if active_name == "Unknown Merchant":
+                log.info(f"🔄 [SESSION] Unknown merchant detected for '{account_name}' — initiating logout/relogin recovery...")
+                recovered = _deliberate_logout_and_relogin(
+                    driver,
+                    username=username,
+                    password=password,
+                    phone=phone,
+                )
+                if not recovered:
+                    log.warning(f"⚠️ [SESSION] Recovery failed for '{account_name}'. Will attempt token extraction anyway.")
+                else:
+                    log.info(f"✅ [SESSION] Successfully recovered clean session for '{account_name}'.")
 
             # 3. Final Token Extraction
             t, eid = _trigger_and_extract_tokens(driver)
