@@ -224,10 +224,19 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
     log.info("📊 Merging all downloaded VB files to 0Master.xlsx...")
     all_data = []
     
+    valid_prefixes = []
+    for p in portals:
+        safe_name = f"{p['outlet']}_{p['branch']}".replace("/", "_").replace("\\", "_")
+        valid_prefixes.append(safe_name)
+        
     xlsx_files = sorted(laporan_dir.glob("*.xlsx"))
     for fpath in xlsx_files:
         if fpath.name.startswith("MASTER") or fpath.name.startswith("0Master"):
             continue
+            
+        if not any(fpath.name == f"{vp}.xlsx" or fpath.name.startswith(f"{vp}-") for vp in valid_prefixes):
+            continue
+            
         try:
             df = pd.read_excel(fpath, dtype=str)
             if not df.empty:

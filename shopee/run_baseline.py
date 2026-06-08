@@ -449,9 +449,14 @@ def run_pipeline():
         except:
             return 0
             
+    valid_safe_merchants = [p["merchant_name"].replace(" ", "_") for p in portals_to_run]
+
     for fpath in xlsx_files:
         filename = os.path.basename(fpath)
         if filename.startswith("MASTER") or filename.startswith("0Master"):
+            continue
+            
+        if not any(filename.startswith(sm + "_") for sm in valid_safe_merchants):
             continue
             
         try:
