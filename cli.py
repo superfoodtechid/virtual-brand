@@ -169,22 +169,37 @@ def interactive_mode():
     start_date = None
     end_date = None
     
-    df_vb = None
-    def load_df():
-        nonlocal df_vb
-        if df_vb is not None:
-            return df_vb
+    df_grab = None
+    df_shopee = None
+    def load_dfs():
+        nonlocal df_grab, df_shopee
+        if df_grab is not None and df_shopee is not None:
+            return
+            
         import pandas as pd
         import requests
         import io
-        print(f"\n  {CYAN}[INFO] Mengunduh daftar merchant VB terbaru dari Google Sheets...{RESET}")
-        CSV_URL_MAIN = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
+        print(f"\n  {CYAN}[INFO] Mengunduh daftar portal VB terbaru dari Google Sheets...{RESET}")
+        URL_GRAB = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=978201567&single=true&output=csv"
+        URL_SHOPEE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=565510790&single=true&output=csv"
+        
         try:
-            resp_main = requests.get(CSV_URL_MAIN, timeout=30)
-            resp_main.raise_for_status()
-            df_main = pd.read_csv(io.StringIO(resp_main.text))
-            df_vb = df_main[df_main["Role"].str.strip().str.lower() == "owner"] if "Role" in df_main.columns else df_main
-            return df_vb
+            resp_grab = requests.get(URL_GRAB, timeout=30)
+            resp_grab.raise_for_status()
+            df_g = pd.read_csv(io.StringIO(resp_grab.text))
+            if "Notes" in df_g.columns:
+                df_g = df_g[~df_g["Notes"].astype(str).str.contains("restricted", na=False, case=False)]
+            df_grab = df_g.dropna(subset=["Portal"])
+            
+            resp_shopee = requests.get(URL_SHOPEE, timeout=30)
+            resp_shopee.raise_for_status()
+            df_s = pd.read_csv(io.StringIO(resp_shopee.text))
+            if "Notes" in df_s.columns:
+                df_s = df_s[~df_s["Notes"].astype(str).str.contains("restricted", na=False, case=False)]
+            if "Role" in df_s.columns:
+                df_shopee = df_s[df_s["Role"].astype(str).str.strip().str.lower() == "owner"].dropna(subset=["Portal"])
+            else:
+                df_shopee = df_s.dropna(subset=["Portal"])
         except Exception as e:
             print(f"  {RED}[ERROR] Gagal mengunduh Google Sheets: {e}{RESET}")
             sys.exit(1)
@@ -228,7 +243,7 @@ def interactive_mode():
                 shopee_merchant = []
                 state = "date"
             elif scope_choice == "2":
-                df_vb = load_df()
+                load_dfs()
                 if platform in ("grab", "all"):
                     state = "grab_outlet"
                 else:
@@ -237,20 +252,19 @@ def interactive_mode():
                 print(f"  {RED}Input tidak valid. Masukkan 1, 2, atau 3.{RESET}")
 
         elif state == "grab_outlet":
-            df_grab = df_vb[df_vb["Aplikasi"].str.contains("Grab", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
-            if df_grab.empty:
+            if df_grab is None or df_grab.empty:
                 print(f"  {RED}[WARNING] Tidak ditemukan outlet Grab VB di Google Sheets.{RESET}")
                 state = "scope"
                 continue
                 
-            outlets_list = sorted(df_grab["Nama Outlet"].dropna().unique())
-            print(f"\n  {BOLD}Pilih Outlet Grab VB:{RESET}")
+            outlets_list = sorted(df_grab["Portal"].dropna().unique())
+            print(f"\n  {BOLD}Pilih Portal Grab VB:{RESET}")
             for idx, o_name in enumerate(outlets_list):
                 print(f"    {GREEN}[{idx + 1}]{RESET} {o_name}")
             print(f"    {CYAN}[b]{RESET} Kembali ke cakupan outlet")
             print()
             
-            o_choices = input(f"  {BOLD}Pilih nomor outlet Grab (contoh: 1,3 atau 'all' atau 'b'):{RESET} ").strip()
+            o_choices = input(f"  {BOLD}Pilih nomor portal Grab (contoh: 1,3 atau 'all' atau 'b'):{RESET} ").strip()
             if o_choices.lower() == "b":
                 state = "scope"
             elif o_choices.lower() == "all":
@@ -274,23 +288,22 @@ def interactive_mode():
                     print(f"  {RED}Pilihan tidak valid.{RESET}")
 
         elif state == "shopee_merchant":
-            df_shopee = df_vb[df_vb["Aplikasi"].str.contains("Shopee", na=False, case=False)] if not df_vb.empty else pd.DataFrame()
-            if df_shopee.empty:
-                print(f"  {RED}[WARNING] Tidak ditemukan merchant Shopee VB di Google Sheets.{RESET}")
+            if df_shopee is None or df_shopee.empty:
+                print(f"  {RED}[WARNING] Tidak ditemukan portal Shopee VB di Google Sheets.{RESET}")
                 if platform == "all":
                     state = "grab_outlet"
                 else:
                     state = "scope"
                 continue
                 
-            merchants = sorted(df_shopee["Merchant Name"].dropna().unique())
-            print(f"\n  {BOLD}Pilih Merchant ShopeeFood VB:{RESET}")
+            merchants = sorted(df_shopee["Portal"].dropna().unique())
+            print(f"\n  {BOLD}Pilih Portal ShopeeFood VB:{RESET}")
             for idx, m_name in enumerate(merchants):
                 print(f"    {GREEN}[{idx + 1}]{RESET} {m_name}")
             print(f"    {CYAN}[b]{RESET} Kembali ke menu sebelumnya")
             print()
             
-            m_choices = input(f"  {BOLD}Pilih nomor merchant Shopee (contoh: 1,2 atau 'all' atau 'b'):{RESET} ").strip()
+            m_choices = input(f"  {BOLD}Pilih nomor portal Shopee (contoh: 1,2 atau 'all' atau 'b'):{RESET} ").strip()
             if m_choices.lower() == "b":
                 if platform == "all":
                     state = "grab_outlet"

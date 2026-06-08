@@ -58,6 +58,8 @@ def get_vb_portals() -> list:
     log.info("🌐 Fetching portal credentials dynamically from oogle Sheets...")
     try:
         df = pd.read_csv(CRED_URL)
+        if "Notes" in df.columns:
+            df = df[~df["Notes"].astype(str).str.contains("restricted", na=False, case=False)]
         owner_df = df[df['Role'].str.strip().str.lower() == 'owner'].copy()
         
         for _, row in owner_df.iterrows():
@@ -74,12 +76,18 @@ def get_vb_portals() -> list:
                 except:
                     phone_str = str(phone_val).strip()
             
+            raw_merchant = row.get('Merchant Name')
+            if pd.isna(raw_merchant) or str(raw_merchant).strip() == "":
+                merchant_name = portal_val
+            else:
+                merchant_name = str(raw_merchant).strip()
+
             portals.append({
                 "account_name": account_name,
                 "username": str(row.get('Username', '')).strip(),
                 "password": str(row.get('Password', '')).strip(),
                 "phone": phone_str,
-                "merchant_name": str(row.get('Merchant Name', '')).strip()
+                "merchant_name": merchant_name
             })
             
         if portals:
