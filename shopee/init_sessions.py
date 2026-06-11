@@ -115,19 +115,31 @@ def initialize_all_sessions(headless_on_login=False, only_portal=None):
     """
     Loops through the configured portal accounts, checks their session status,
     and runs the Selenium login sequence sequentially if any account is unauthenticated.
+
+    Args:
+        headless_on_login: run browser in headless mode.
+        only_portal: a single portal name string (e.g. 'portal_w' or 'w'),
+                     OR a list of portal name strings to restrict initialization to.
+                     If None, all portals are initialized.
     """
     portals = get_vb_portals()
     if not portals:
         log.error("❌ No portals retrieved (dynamic fetch and cache fallback both failed).")
         return False
 
-    if only_portal:
-        target = only_portal.strip().lower()
-        if not target.startswith("portal_"):
-            target = f"portal_{target}"
-        portals = [p for p in portals if p["account_name"].lower() == target]
+    # Normalize only_portal to a set of lowercase account_name strings
+    if only_portal is not None:
+        if isinstance(only_portal, str):
+            only_portal = [only_portal]
+        targets = set()
+        for t in only_portal:
+            t = t.strip().lower()
+            if not t.startswith("portal_"):
+                t = f"portal_{t}"
+            targets.add(t)
+        portals = [p for p in portals if p["account_name"].lower() in targets]
         if not portals:
-            log.error(f"❌ Portal '{only_portal}' tidak ditemukan dalam daftar kredensial.")
+            log.error(f"❌ No portal matches filter: {list(targets)}")
             return False
 
     log.info("==================================================")

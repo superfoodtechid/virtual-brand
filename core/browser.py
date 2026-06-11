@@ -13,11 +13,11 @@ import random
 from datetime import datetime
 from pathlib import Path
 
+import shutil
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -534,6 +534,55 @@ def _deliberate_logout_and_relogin(
 
 # ── Driver Initialization ──────────────────────────────────────────────────────
 
+def _clean_chrome_profile_locks(account_name: str):
+    """
+    Removes stale Chrome lock files from the profile directory.
+    Chrome leaves behind 'SingletonLock', 'SingletonSocket', and 'SingletonCookie'
+    when it crashes — these prevent new instances from starting on the same profile.
+    """
+    import glob
+    script_dir = Path(__file__).parent.parent
+    profile_dir = script_dir / "data" / "chrome_profiles" / account_name
+    stale_locks = ["SingletonLock", "SingletonSocket", "SingletonCookie", "lockfile"]
+    cleaned = []
+    for lock_name in stale_locks:
+        lock_path = profile_dir / lock_name
+        if lock_path.exists() or lock_path.is_symlink():
+            try:
+                lock_path.unlink()
+                cleaned.append(lock_name)
+            except Exception as ex:
+                log.debug(f"  ⚠️ Could not remove lock '{lock_name}': {ex}")
+    # Also remove per-profile SingletonLock inside the profile subdirectory
+    for sub_lock in glob.glob(str(profile_dir / f"profile_{account_name}" / "SingletonLock")):
+        try:
+            Path(sub_lock).unlink()
+            cleaned.append(f"profile/{Path(sub_lock).name}")
+        except Exception:
+            pass
+    if cleaned:
+        log.info(f"🧹 [BROWSER] Cleaned stale Chrome lock(s) for '{account_name}': {', '.join(cleaned)}")
+
+
+def _nuke_chrome_profile(account_name: str):
+    """
+    Last-resort recovery: completely wipes the Chrome profile directory for an account.
+    Used when lock-file cleanup alone cannot fix a corrupted profile that prevents
+    the renderer from connecting (SessionNotCreatedException). The next launch will
+    get a brand-new, clean profile and trigger a fresh browser login.
+    """
+    import shutil as _shutil
+    script_dir = Path(__file__).parent.parent
+    profile_dir = script_dir / "data" / "chrome_profiles" / account_name
+    if not profile_dir.exists():
+        return
+    try:
+        _shutil.rmtree(profile_dir)
+        log.warning(f"💣 [BROWSER] Nuked corrupt Chrome profile for '{account_name}' at: {profile_dir}")
+    except Exception as ex:
+        log.error(f"❌ [BROWSER] Could not wipe Chrome profile for '{account_name}': {ex}")
+
+
 def _init_driver(headless: bool, account_name: str):
     options = Options()
     options.add_argument("--log-level=3")
@@ -541,6 +590,11 @@ def _init_driver(headless: bool, account_name: str):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    # Renderer stability flags — prevent renderer from crashing on profile re-use
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-ipc-flooding-protection")
+    options.add_argument("--renderer-process-limit=1")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     if headless:
         options.add_argument("--headless=new")
@@ -551,10 +605,17 @@ def _init_driver(headless: bool, account_name: str):
     # Isolate Chrome data directories per account
     script_dir = Path(__file__).parent.parent
     profile_dir = script_dir / "data" / "chrome_profiles" / account_name
+    profile_dir.mkdir(parents=True, exist_ok=True)
     options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
     options.add_argument(f"--profile-directory=profile_{account_name}")
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    # Use system chromedriver to avoid webdriver-manager version mismatch / lock issues
+    _chromedriver_path = shutil.which("chromedriver")
+    if not _chromedriver_path:
+        raise RuntimeError(
+            "chromedriver not found in PATH. Install it with: sudo apt install chromium-driver"
+        )
+    driver = webdriver.Chrome(service=Service(_chromedriver_path), options=options)
     driver.set_page_load_timeout(60)
     return driver
 
@@ -710,11 +771,16 @@ def get_session(account_name: str, username: str = None, password: str = None, p
             run_headless_now = False
 
         log.info(f"🌐 [BROWSER] Launching isolated browser for '{account_name}' (headless={run_headless_now}, attempt={attempt+1}/3)...")
-        driver = _init_driver(headless=run_headless_now, account_name=account_name)
-        wait = WebDriverWait(driver, 30)
+        # Pre-emptively clean stale Chrome lock files before each attempt.
+        # A previous crashed session can leave SingletonLock/SingletonSocket behind
+        # which causes "unable to connect to renderer" on the very next launch.
+        _clean_chrome_profile_locks(account_name)
+        driver = None
         session_success = False
 
         try:
+            driver = _init_driver(headless=run_headless_now, account_name=account_name)
+            wait = WebDriverWait(driver, 30)
             driver.get(PARTNER_DASHBOARD)
             time.sleep(4)
             
@@ -848,30 +914,47 @@ def get_session(account_name: str, username: str = None, password: str = None, p
                 time.sleep(2)
 
             # --- DETECT UNKNOWN MERCHANT / STUCK DASHBOARD ---
+            # Retry up to 5 times with 3s interval — API may be slow right after onboarding/login
             active_id = None
             active_name = "Unknown Merchant"
-            try:
-                api_js = '''
-                var done = arguments[arguments.length - 1];
-                let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
-                fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'x-merchant-token': token || '' },
-                    credentials: 'include'
-                })
-                .then(r => r.json())
-                .then(j => done(j.data || null))
-                .catch(() => done(null));
-                '''
-                driver.set_script_timeout(10)
-                user_data = driver.execute_async_script(api_js)
-                if user_data:
-                    active_id = str(user_data.get("merchantId") or "")
-                    active_name = user_data.get("merchantName") or "Unknown Merchant"
-            except: pass
-            
+            _merchant_api_js = '''
+            var done = arguments[arguments.length - 1];
+            let token = document.cookie.split('; ').find(row => row.startsWith('shopee_tob_token='))?.split('=')[1];
+            fetch('https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-merchant-token': token || '' },
+                credentials: 'include'
+            })
+            .then(r => r.json())
+            .then(j => done(j.data || null))
+            .catch(() => done(null));
+            '''
+            for _ma in range(5):
+                try:
+                    driver.set_script_timeout(12)
+                    _user_data = driver.execute_async_script(_merchant_api_js)
+                    if _user_data:
+                        active_id   = str(_user_data.get("merchantId") or "")
+                        active_name = _user_data.get("merchantName") or "Unknown Merchant"
+                        if active_name != "Unknown Merchant":
+                            log.info(f"✅ [SESSION] Merchant terdeteksi: '{active_name}' (attempt {_ma + 1})")
+                            break
+                except Exception as _me:
+                    log.debug(f"  ⚠️ Merchant API attempt {_ma + 1}/5 gagal: {_me}")
+
+                # Fallback: URL-based check — jika sudah di halaman portal yang valid, skip recovery
+                _cur_url = driver.current_url.lower()
+                if any(p in _cur_url for p in ["/food/", "/settings/", "/nb/"]):
+                    log.info(f"✅ [SESSION] URL valid ('{driver.current_url}'). Merchant dianggap aktif, skip recovery.")
+                    active_name = "Detected via URL"
+                    break
+
+                if _ma < 4:
+                    log.debug(f"  ⏳ Merchant belum terdeteksi (attempt {_ma + 1}/5). Retry dalam 3 detik...")
+                    time.sleep(3)
+
             if active_name == "Unknown Merchant":
-                log.info(f"🔄 [SESSION] Unknown merchant detected for '{account_name}' — initiating logout/relogin recovery...")
+                log.info(f"🔄 [SESSION] Unknown merchant setelah 5 attempt untuk '{account_name}' — initiating logout/relogin recovery...")
                 recovered = _deliberate_logout_and_relogin(
                     driver,
                     username=username,
@@ -899,6 +982,23 @@ def get_session(account_name: str, username: str = None, password: str = None, p
 
         except Exception as e:
             log.error(f"❌ [BROWSER] Session error for '{account_name}' on attempt {attempt+1}: {e}")
+            err_msg = str(e).lower()
+            is_renderer_crash = (
+                "session not created" in err_msg
+                or "unable to connect to renderer" in err_msg
+                or "chrome instance exited" in err_msg
+                or "disconnected" in err_msg
+            )
+            if is_renderer_crash:
+                if attempt == 0:
+                    # Attempt 1 failed: try cleaning just the stale lock files first
+                    log.warning(f"⚠️ [BROWSER] Renderer crash on attempt 1 for '{account_name}'. Cleaning profile locks...")
+                    _clean_chrome_profile_locks(account_name)
+                else:
+                    # Attempt 2+ still failing: profile itself is corrupt → nuke it entirely
+                    log.warning(f"💣 [BROWSER] Renderer crash persists for '{account_name}' (attempt {attempt+1}). Nuking corrupt profile for a fresh start...")
+                    _nuke_chrome_profile(account_name)
+                time.sleep(3)  # Brief pause to let OS fully release file handles
         finally:
             if (close_browser or not session_success) and driver is not None:
                 try:

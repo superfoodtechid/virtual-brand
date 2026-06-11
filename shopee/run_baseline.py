@@ -389,8 +389,13 @@ def run_pipeline():
             headless_login = True
 
         log.info("🔑 Step 1: Checking and initializing portal sessions sequentially...")
-        # Run sequential session login/verification
-        sessions_ok = initialize_all_sessions(headless_on_login=headless_login)
+        # Pass only the account names that were selected by the merchant filter,
+        # so portals that were NOT selected are not initialized unnecessarily.
+        selected_account_names = [p["account_name"] for p in portals_to_run]
+        sessions_ok = initialize_all_sessions(
+            headless_on_login=headless_login,
+            only_portal=selected_account_names,
+        )
         if not sessions_ok:
             log.warning("⚠️ Some sessions are missing or expired. Continuing anyway but some tasks may fail.")
 

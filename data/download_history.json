@@ -1,0 +1,26 @@
+{
+  "portal_d::20260601_20260608": {
+    "path": "/mnt/DATA/Proyek/task-weekly/staging/VB/laporan/shopee_vb/2026-06-01_to_2026-06-08/D_Gurame_Bakar,_Do_Eat_Transactions_20260601_20260608.xlsx",
+    "merchant": "D",
+    "range": "01 Jun 2026 - 08 Jun 2026",
+    "source": "export_task",
+    "task_id": "257760",
+    "fetched_at": "2026-06-11T15:25:43.246425"
+  },
+  "portal_f::20260601_20260608": {
+    "path": "/mnt/DATA/Proyek/task-weekly/staging/VB/laporan/shopee_vb/2026-06-01_to_2026-06-08/F_SuperFood_Transactions_20260601_20260608.xlsx",
+    "merchant": "F",
+    "range": "01 Jun 2026 - 08 Jun 2026",
+    "source": "export_task",
+    "task_id": "257759",
+    "fetched_at": "2026-06-11T15:25:43.585220"
+  },
+  "portal_w::20260601_20260608": {
+    "path": "/mnt/DATA/Proyek/task-weekly/VB/laporan/shopee_vb/2026-06-01_to_2026-06-08/W_WonderFood_Transactions_20260601_20260608-02.xlsx",
+    "merchant": "W",
+    "range": "01 Jun 2026 - 08 Jun 2026",
+    "source": "export_task",
+    "task_id": "257757",
+    "fetched_at": "2026-06-11T17:00:58.294337"
+  }
+}

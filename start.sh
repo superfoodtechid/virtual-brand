@@ -1,6 +1,8 @@
-[ignoring loop detection]
 #!/bin/bash
 set -e
+
+# Change directory to script's directory
+cd "$(dirname "$0")"
 
 echo "=================================================="
 echo "[SETUP] Mempersiapkan lingkungan Python (UV)..."
@@ -30,7 +32,7 @@ echo "[INFO] Sinkronisasi dependensi virtual environment menggunakan uv sync..."
 uv sync
 
 echo "[INFO] Mengunduh browser Chromium untuk Playwright..."
-uv run playwright install chromium
+uv run python -m playwright install chromium
 
 echo "[INFO] Menjalankan aplikasi menggunakan uv run..."
 uv run python cli.py
