@@ -1,0 +1,6 @@
+2026/06/18-14:46:16.639 94a3 Creating DB /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profile/profile_allvbadmin/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb since it was missing.
+2026/06/18-14:46:16.660 94a3 Reusing MANIFEST /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profile/profile_allvbadmin/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/18-14:46:16.816 94a5 Level-0 table #5: started
+2026/06/18-14:46:16.822 94a5 Level-0 table #5: 2204 bytes OK
+2026/06/18-14:46:16.834 94a5 Delete type=0 #3
+2026/06/18-14:46:16.841 94a2 Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

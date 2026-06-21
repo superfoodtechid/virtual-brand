@@ -1,0 +1,13 @@
+2026/06/11-14:46:34.098 169b Reusing MANIFEST /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profiles/portal_w/profile_portal_w/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/11-14:46:34.099 169b Recovering log #4
+2026/06/11-14:46:34.101 169b Reusing old log /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profiles/portal_w/profile_portal_w/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/000004.log 
+2026/06/11-14:46:34.157 169f Level-0 table #8: started
+2026/06/11-14:46:34.162 169f Level-0 table #8: 8939 bytes OK
+2026/06/11-14:46:34.166 169f Delete type=0 #4
+2026/06/11-14:46:34.167 169a Manual compaction at level-0 from '\x00\x04\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x05\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/06/11-14:49:01.711 169b Compacting 1@1 + 1@2 files
+2026/06/11-14:49:01.733 169b Generated table #9@1: 60 keys, 2043 bytes
+2026/06/11-14:49:01.734 169b Compacted 1@1 + 1@2 files => 2043 bytes
+2026/06/11-14:49:01.738 169b compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/06/11-14:49:01.739 169b Delete type=2 #8
+2026/06/11-14:49:01.739 169b Delete type=2 #5

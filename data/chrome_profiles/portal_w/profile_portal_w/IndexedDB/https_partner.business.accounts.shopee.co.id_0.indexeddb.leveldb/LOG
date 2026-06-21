@@ -1,0 +1,7 @@
+2026/06/11-14:58:44.729 2410 Reusing MANIFEST /mnt/DATA/Proyek/task-weekly/staging/VB/data/chrome_profiles/portal_w/profile_portal_w/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/11-14:58:44.730 2410 Recovering log #7
+2026/06/11-14:58:44.737 2410 Reusing old log /mnt/DATA/Proyek/task-weekly/staging/VB/data/chrome_profiles/portal_w/profile_portal_w/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/000007.log 
+2026/06/11-14:58:44.827 2432 Level-0 table #12: started
+2026/06/11-14:58:44.872 2432 Level-0 table #12: 15205 bytes OK
+2026/06/11-14:58:44.875 2432 Delete type=0 #7
+2026/06/11-14:58:44.876 240f Manual compaction at level-0 from '\x00\x05\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x06\x00\x00\x00' @ 0 : 0; will stop at (end)

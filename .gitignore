@@ -20,12 +20,19 @@ logs/
 # Credentials & Secrets
 .env
 *credentials*.json
-session.json
-session_*.json
-sessions/
-shopee/sessions/
-grab/sessions/
-data/chrome_profile/
-data/chrome_profile_*/
-data/chrome_profiles/
 data/*_cache.csv
+
+# Browser Profiles & Sessions Caches (Profiles & Sessions themselves are allowed)
+**/*Cache*/
+**/*cache*/
+**/Crashpad/
+**/Code Cache/
+**/GPUCache/
+**/Cache/
+**/Cache_Data/
+**/DawnCache/
+**/DawnGraphiteCache/
+**/DawnWebGPUCache/
+**/AutofillAiModelCache/
+**/ScriptCache/
+**/CacheStorage/

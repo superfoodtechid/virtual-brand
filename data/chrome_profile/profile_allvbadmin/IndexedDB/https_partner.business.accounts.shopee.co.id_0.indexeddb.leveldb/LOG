@@ -1,0 +1,7 @@
+2026/06/18-14:46:35.438 95bc Reusing MANIFEST /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profile/profile_allvbadmin/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/18-14:46:35.439 95bc Recovering log #4
+2026/06/18-14:46:35.443 95bc Reusing old log /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profile/profile_allvbadmin/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/000004.log 
+2026/06/18-14:46:35.504 95ee Level-0 table #8: started
+2026/06/18-14:46:35.510 95ee Level-0 table #8: 6502 bytes OK
+2026/06/18-14:46:35.515 95ee Delete type=0 #4
+2026/06/18-14:46:35.517 95bc Manual compaction at level-0 from '\x00\x04\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x05\x00\x00\x00' @ 0 : 0; will stop at (end)

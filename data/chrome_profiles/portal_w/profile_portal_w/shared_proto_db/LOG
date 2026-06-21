@@ -1,0 +1,4 @@
+2026/06/11-17:00:00.952 7cb0 Reusing MANIFEST /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profiles/portal_w/profile_portal_w/shared_proto_db/MANIFEST-000001
+2026/06/11-17:00:00.954 7cb0 Recovering log #3
+2026/06/11-17:00:00.955 7cb0 (ignoring error) /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profiles/portal_w/profile_portal_w/shared_proto_db/000003.log: dropping 407 bytes; Corruption: missing start of fragmented record(2)
+2026/06/11-17:00:00.955 7cb0 Reusing old log /mnt/DATA/Proyek/task-weekly/VB/data/chrome_profiles/portal_w/profile_portal_w/shared_proto_db/000003.log 

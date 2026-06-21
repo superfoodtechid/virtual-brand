@@ -158,10 +158,14 @@ def get_all_cookies_dict(driver) -> dict:
     return {c["name"]: c["value"] for c in driver.get_cookies()}
 
 def _trigger_and_extract_tokens(driver) -> tuple:
-    log.debug("  🔄 Triggering fresh token issuance...")
+    log.debug("  🔄 Extracting tokens...")
+    # First, try to extract without deleting anything
+    t, eid = extract_tokens_from_driver(driver)
+    if t:
+        return t, eid
+
+    log.debug("  🔄 Token not found, triggering fresh token issuance...")
     try:
-        try: driver.delete_cookie("shopee_tob_token")
-        except: pass
         driver.get(TOKEN_TRIGGER_PAGE)
         for _ in range(10):
             tob_token, entity_id = extract_tokens_from_driver(driver)
