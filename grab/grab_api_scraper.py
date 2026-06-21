@@ -3,9 +3,29 @@ import json
 import asyncio
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import pandas as pd
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+
+import sys
+from pathlib import Path
+# Dynamically add potential paths for discord_notifier
+_curr_path = Path(__file__).resolve()
+_paths_to_check = [
+    _curr_path.parent.parent,
+    _curr_path.parent.parent.parent,
+    _curr_path.parent.parent.parent / "src",
+]
+for _p in _paths_to_check:
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.append(str(_p))
+
+try:
+    from discord_notifier import send_discord_error
+except ImportError:
+    def send_discord_error(*args, **kwargs): pass
+
 try:
     from filelock import FileLock
 except ImportError:
@@ -22,6 +42,12 @@ except ImportError:
 load_dotenv(override=True)
 
 import logging
+import sys
+try:
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    from discord_notifier import send_discord_error
+except ImportError:
+    def send_discord_error(*args, **kwargs): pass
 
 logger = logging.getLogger("GrabAuto")
 
@@ -33,6 +59,30 @@ class IncorrectCredentialsError(Exception):
     """Custom exception when login fails due to wrong username or password"""
     pass
 
+def json_to_grab_csv_fallback(json_data, output_path):
+    """Fallback adapter: Converts JSON data to standard Grab CSV format."""
+    rows = []
+    grabfood_types = ['grabfood', 'grabfood for one']
+    
+    for tx in json_data:
+        if str(tx.get('transaction_type', '')).lower() not in grabfood_types or tx.get('transaction_status') == 'canceled':
+            continue
+
+        created_dt = datetime.strptime(tx['created_at'], "%Y-%m-%dT%H:%M:%SZ")
+        updated_dt = datetime.strptime(tx['updated_at'], "%Y-%m-%dT%H:%M:%SZ")
+        
+        rows.append({
+            "Created On": created_dt.strftime("%d %b %Y %I:%M %p"),
+            "Updated On": updated_dt.strftime("%d %b %Y %I:%M %p"),
+            "Long Order ID": tx.get('long_order_id', f"DUMMY-{tx['transaction_id']}"),
+            "Category": tx.get('transaction_category', 'Payment').capitalize(),
+            "Status": tx.get('transaction_status', 'Settled').capitalize(),
+            "Net Sales": tx.get('net_total', 0)
+        })
+        
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+    return output_path
 
 import re
 
@@ -251,7 +301,117 @@ class GrabAPI:
         except Exception as e:
             return False, str(e)
 
-async def perform_login(page, user, pwd):
+    async def execute_fallback(self, mgid, start_date, end_date):
+        """Executes the S3 Insights bypass API strategy to replace V1+V2."""
+        from datetime import datetime
+        import json
+        import uuid
+        import requests
+        
+        logger.info(f"  [S3 Insights] Starting S3 bypass for {start_date} to {end_date}...")
+        
+        # 1. Fetch store list for payload (hanya butuh memanggil 1 kali untuk dapat semua store)
+        stores_url = f"{self.base_url}/mex/finances/v1/transactions?merchant_group_id={mgid}&from={start_date}&to={start_date}&limit=50&offset=0&currency=IDR"
+        st_resp = await self.call_api(stores_url)
+        store_grab_ids = []
+        if st_resp.get("status") == 200:
+            for st in st_resp.get("data", {}).get("data", []):
+                sid = st.get("store_id")
+                if sid: store_grab_ids.append(sid)
+                
+        # Remove duplicates
+        store_grab_ids = list(set(store_grab_ids))
+        logger.info(f"  [S3 Insights] Found {len(store_grab_ids)} stores. Building payload...")
+                
+        # 2. Convert dates to ISO 8601
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_date_str = start_dt.strftime("%Y-%m-%dT00:00:00.000Z")
+        end_date_str = end_dt.strftime("%Y-%m-%dT23:59:59.000Z")
+        
+        insights_url = f"{self.base_url}/mex-insights/download/v1/csv?merchant_group_id={mgid}&currency=IDR"
+        payload = {
+            "merchant_group_id": mgid,
+            "parentEntityIds": [],
+            "businessLines": [],
+            "endDate": end_date_str,
+            "queryNames": ["sales-performance-download"],
+            "startDate": start_date_str,
+            "storeGrabIDs": store_grab_ids,
+            "storeZeusIDs": []
+        }
+        
+        # 3. Post to Insights API directly using evaluate to bypass Playwright context limits
+        res_json = await self.page.evaluate(f"""
+        async (payloadObj) => {{
+            const r = await fetch("{insights_url}", {{
+                method: "POST",
+                headers: {{
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "x-api-source": "mex-insign",
+                    "x-currency": "IDR",
+                    "x-merchant-id": "{mgid}"
+                }},
+                body: JSON.stringify(payloadObj)
+            }});
+            if (!r.ok) return {{ error: await r.text() }};
+            return await r.json();
+        }}
+        """, payload)
+        
+        if not res_json or "ref_id" not in res_json:
+            return None, f"Failed to get ref_id from S3 Insights API: {res_json}"
+            
+        ref_id = res_json.get("ref_id")
+        logger.info(f"  [S3 Insights] Ref ID obtained: {ref_id}. Polling for generated CSV...")
+        
+        # 4. Poll for URL
+        for i in range(40):
+            await asyncio.sleep(5)
+            p_url = f"{self.base_url}/mex-insights/download/v1/generated-insights/{ref_id}"
+            p_data = await self.page.evaluate(f"""
+            async () => {{
+                const r = await fetch("{p_url}", {{
+                    headers: {{
+                        "accept": "application/json",
+                        "x-api-source": "mex-insign",
+                        "x-merchant-id": "{mgid}"
+                    }}
+                }});
+                if (!r.ok) return {{ status: "HTTP_ERROR" }};
+                return await r.json();
+            }}
+            """)
+            
+            status = p_data.get("status")
+            if status == "SUCCESS":
+                s3_url = p_data.get("s3_url")
+                if not s3_url:
+                    return None, "S3 Insights status SUCCESS but no s3_url provided."
+                    
+                job_id = uuid.uuid4().hex[:8]
+                filename = f"downloads/grab_transactions_{mgid}_s3_{job_id}.csv"
+                os.makedirs("downloads", exist_ok=True)
+                
+                # Using standard requests to fetch S3 (since it's a pre-signed URL)
+                logger.info(f"  [S3 Insights] S3 Link found! Downloading to {filename}...")
+                csv_req = requests.get(s3_url)
+                if csv_req.status_code == 200:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(csv_req.text)
+                    logger.info(f"  [S3 Insights] CSV successfully downloaded.")
+                    return filename, None
+                else:
+                    return None, f"Failed to download from S3 URL. HTTP {csv_req.status_code}"
+            elif status == "IN_PROGRESS":
+                continue
+            else:
+                return None, f"S3 Polling failed with status: {status}"
+                
+        return None, "S3 Polling timeout after 40 attempts."
+
+async def perform_login(page, user, pwd, is_retry=False):
     """Robust login steps — clears cookies on mismatch and handles sticky 'Welcome back' pages."""
     CLEAN_LOGIN_URL = (
         "https://weblogin.grab.com/merchant/login"
@@ -278,6 +438,13 @@ async def perform_login(page, user, pwd):
                     ss_path = f"logs/account_blocked_{user}.png"
                     await page.screenshot(path=ss_path)
                     logger.error(f"  ✗ [Login] Account blocked screen detected for {user}. Screenshot saved to {ss_path}.")
+                    if is_retry:
+                        send_discord_error(
+                            platform="Grab", 
+                            merchant=user, 
+                            error_type="BLOCKED_ACCOUNT", 
+                            message="Akun ditangguhkan (suspended) sementara oleh sistem Grab karena terlalu banyak percobaan salah."
+                        )
                     raise IncorrectCredentialsError(f"Account is temporarily blocked due to multiple invalid login attempts.")
 
             # Check for Incorrect Credentials Error on screen
@@ -286,7 +453,24 @@ async def perform_login(page, user, pwd):
                 "attempts left",
                 "Pastikan nama pengguna dan kata sandi",
                 "kesempatan tersisa",
-                "salah memasukkan password"
+                "salah memasukkan password",
+                "Kredensial tidak valid",
+                "Username atau kata sandi",
+                "We didn't recognize that",
+                "Invalid credentials",
+                "Wrong credentials",
+                "Incorrect password",
+                "Kata sandi salah",
+                "Alamat email atau nomor telepon salah",
+                "Please check your login details",
+                "akun tidak ditemukan",
+                "tidak dapat menemukan akun",
+                "couldn't find an account",
+                "account not found",
+                "email tidak terdaftar",
+                "detail tidak dikenali",
+                "akun tidak dikenali",
+                "not recognize that"
             ]
             for text in error_texts:
                 if text.lower() in page_content.lower():
@@ -295,6 +479,13 @@ async def perform_login(page, user, pwd):
                     ss_path = f"logs/incorrect_credentials_{user}.png"
                     await page.screenshot(path=ss_path)
                     logger.error(f"  ✗ [Login] Wrong credentials error screen detected for {user}. Screenshot saved to {ss_path}.")
+                    if is_retry:
+                        send_discord_error(
+                            platform="Grab", 
+                            merchant=user, 
+                            error_type="WRONG_CREDENTIALS", 
+                            message="Gagal login. Kombinasi Email/Username dan Kata Sandi tidak cocok, atau halaman mengindikasikan kredensial salah."
+                        )
                     raise IncorrectCredentialsError(f"Incorrect username or password. Remaining attempts warning shown on page.")
 
         print(f"  [Login] Navigating to login page for {user}...")
@@ -320,6 +511,8 @@ async def perform_login(page, user, pwd):
         if "Attention Required" in await page.title() or "cloudflare" in content.lower() or "distil" in content.lower():
             logger.error(f"  ✗ [BLOCK] Detected anti-bot page for {user}.")
             await page.screenshot(path=f"blocked_{user}.png")
+            if is_retry:
+                send_discord_error("Grab", user, "BLOCKED_ACCOUNT", "Browser dihadang oleh proteksi keamanan Grab (Cloudflare/Anti-Bot). Tidak bisa melanjutkan login.", "")
             return False
 
         # --- Handle Sticky "Welcome back" / Saved Accounts page ---
@@ -452,11 +645,18 @@ async def perform_login(page, user, pwd):
         return False
 
 
-async def run_api_download_for_portal(user, pwd, start_date: str = None, end_date: str = None, browser=None):
+async def run_api_download_for_portal(user, pwd, start_date: str = None, end_date: str = None, browser=None, is_retry=False):
     # Proactively validate credentials before proceeding to run session
     is_valid, err_msg = validate_credentials(user, pwd)
     if not is_valid:
         logger.error(f"  ✗ [Validation] Invalid credentials for {user}: {err_msg}")
+        if is_retry:
+            send_discord_error(
+                platform="Grab", 
+                merchant=user, 
+                error_type="WRONG_CREDENTIALS", 
+                message=f"Validasi ditolak sebelum masuk browser. Kredensial tidak logis/kosong: {err_msg}"
+            )
         return None, f"Invalid credentials: {err_msg}"
 
     session_dir = "sessions"
@@ -493,7 +693,13 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                                 break
                     except Exception:
                         pass
-                    managed_browser = await p_inst.chromium.launch(headless=headless_env)
+                    managed_browser = await p_inst.chromium.launch(
+                        headless=headless_env,
+                        args=[
+                            "--disable-extensions",
+                            "--disable-component-update"
+                        ]
+                    )
                     browser = managed_browser
                     p = p_inst
     
@@ -507,18 +713,39 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                 if auth_attempt > 0:
                     logger.info(f"  [Action] Re-opening session for {user} (Auth attempt {auth_attempt + 1})...")
     
-                logger.info(f"  [Isolation] Checking session for {user}...")
-                try:
-                    await page.goto("https://merchant.grab.com/dashboard", wait_until="domcontentloaded", timeout=30000)
-                except:
-                    pass
+                is_on_login_page = True
+                if storage_state is not None:
+                    logger.info(f"  [Isolation] Checking session for {user}...")
+                    try:
+                        # Gunakan timeout yang lebih pendek (15 detik) agar tidak menggantung terlalu lama saat redirect
+                        await page.goto("https://merchant.grab.com/dashboard", wait_until="domcontentloaded", timeout=15000)
+                        await page.wait_for_timeout(1000)
+                        
+                        # Cek apakah sukses masuk ke dashboard / portal utama
+                        current_url = page.url.lower()
+                        if ("dashboard" in current_url or "portal" in current_url) and "login" not in current_url and "saved-accounts" not in current_url:
+                            is_on_login_page = False
+                    except Exception as e:
+                        logger.warning(f"  [Isolation] Session check timed out or failed: {e}")
+                else:
+                    logger.info(f"  [Isolation] No saved session state found for {user}. Going straight to login...")
     
                 api = GrabAPI(page, user, pwd)
-                mgid = await api.get_merchant_group_id()
+                mgid = None
+                
+                # Hanya coba ambil mgid jika kita masih berada di halaman merchant
+                if not is_on_login_page:
+                    mgid = await api.get_merchant_group_id()
     
-                if not mgid:
-                    logger.info(f"  [Session] Not active. Logging in...")
-                    if await perform_login(page, user, pwd):
+                if not mgid or is_on_login_page:
+                    logger.info(f"  [Session] Not active or redirected to login. Logging in...")
+                    if await perform_login(page, user, pwd, is_retry):
+                        # Setelah login sukses, pastikan kita berada di merchant page sebelum ambil API
+                        try:
+                            await page.goto("https://merchant.grab.com/dashboard", wait_until="domcontentloaded", timeout=30000)
+                            await page.wait_for_timeout(2000)
+                        except: pass
+                        
                         mgid = await api.get_merchant_group_id()
                         if mgid:
                             _lock = FileLock(f"{session_path}.lock", timeout=30)
@@ -529,6 +756,8 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                             logger.error(f"  ✗ [Session] Login success but failed to get MGID for {user}.")
                             os.makedirs("logs", exist_ok=True)
                             await page.screenshot(path=f"logs/auth_fail_mgid_{user}.png")
+                            if is_retry:
+                                send_discord_error("Grab", user, "SYSTEM_ERROR", "Login berhasil, tetapi sistem gagal mengidentifikasi Merchant Group ID (MGID). Kemungkinan akun tidak memiliki akses ke portal toko.", "")
                     else:
                         logger.error(f"  ✗ [Session] Login failed for {user}.")
                         os.makedirs("logs", exist_ok=True)
@@ -549,6 +778,8 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                         await managed_browser.close()
                     if p:
                         await p.stop()
+                    if is_retry:
+                        send_discord_error("Grab", user, "LOGIN_FAILED", "Gagal login ke portal Grab. Tidak ada keterangan spesifik pada halaman (bisa jadi OTP/Timeout).", "")
                     return None, "Auth failed after 2 attempts"
     
             except IncorrectCredentialsError as ice:
@@ -579,30 +810,26 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                 await p.stop()
             return None, "Auth failed"
 
-        # --- Download steps (retried WITHOUT re-login to avoid account blocking) ---
-        download_success = False
+        # --- Native Grab CSV Export as PRIMARY METHOD ---
+        logger.info(f"  [Action] Executing Native S3 Download as PRIMARY method for {user}...")
+        s3_filename = None
         last_dl_err = ""
-        for dl_attempt in range(3):
+        
+        for dl_attempt in range(2):
             try:
-                if dl_attempt > 0:
-                    logger.info(f"  [Action] Retrying download for {user} (Attempt {dl_attempt + 1}/3, no re-login)...")
-                    await asyncio.sleep(5)  # Brief pause before retry
-
                 ref_id, err = await api.start_async_download(mgid, report_start, report_end)
                 if not ref_id:
                     logger.warning(f"  [Download] start_async_download failed for {user}: {err}")
-                    last_dl_err = f"Request failed: {err}"
-                    if dl_attempt < 2:
-                        continue
-                    break # Break dl_attempt loop, let outer loop handle retry
+                    last_dl_err = f"Req err: {err}"
+                    await asyncio.sleep(3)
+                    continue
 
                 download_url, err = await api.poll_for_download(mgid, ref_id)
                 if not download_url:
                     logger.warning(f"  [Download] Polling failed for {user}: {err}")
-                    last_dl_err = f"Polling failed: {err}"
-                    if dl_attempt < 2:
-                        continue
-                    break # Break dl_attempt loop
+                    last_dl_err = f"Poll err: {err}"
+                    await asyncio.sleep(3)
+                    continue
 
                 job_id = uuid.uuid4().hex[:8]
                 filename = f"downloads/grab_transactions_{user}_{job_id}.csv"
@@ -612,38 +839,74 @@ async def run_api_download_for_portal(user, pwd, start_date: str = None, end_dat
                     os.makedirs("logs", exist_ok=True)
                     await page.screenshot(path=f"logs/download_fail_{user}.png")
                     logger.warning(f"  [Download] CSV download failed for {user}: {err}")
-                    last_dl_err = f"Download failed: {err}"
-                    if dl_attempt < 2:
-                        continue
-                    break # Break dl_attempt loop
+                    last_dl_err = f"DL err: {err}"
+                    await asyncio.sleep(3)
+                    continue
 
                 # Success!
-                await context.close()
-                if managed_browser:
-                    await managed_browser.close()
-                if p:
-                    await p.stop()
-                return (filename, None)
+                s3_filename = filename
+                break
 
             except SessionStuckError as se:
-                logger.warning(f"  [Action] SessionStuck on download for {user}: {se}")
-                last_dl_err = str(se)
-                if dl_attempt < 2:
-                    continue
-                break # Break dl_attempt loop
+                logger.warning(f"  [Action] SessionStuck on S3 download for {user}: {se}")
+                last_dl_err = f"Stuck: {se}"
+                # Delete broken session file to force fresh login on next attempt
+                if os.path.exists(session_path):
+                    try: os.remove(session_path)
+                    except: pass
+                break
             except Exception as e:
-                logger.error(f"  [Error] Download attempt {dl_attempt + 1} failed for {user}: {e}")
-                last_dl_err = str(e)
-                if dl_attempt < 2:
-                    continue
-                break # Break dl_attempt loop
+                logger.error(f"  [Error] S3 Download attempt failed for {user}: {e}")
+                last_dl_err = f"Ex: {e}"
+                break
+                
+        if s3_filename:
+            logger.info(f"  [Action] Native S3 Download Success! Returning generated CSV.")
+            if context: await context.close()
+            if managed_browser: await managed_browser.close()
+            if p: await p.stop()
+            return s3_filename, None
+            
+        logger.warning(f"  [Action] Primary S3 method failed for {user}: {last_dl_err}.")
 
-        # If we are here, download failed after 3 attempts.
+        # If it failed due to a stuck session, don't bother with fallback, it will fail too.
+        if "Stuck:" not in last_dl_err:
+            logger.info(f"  [Action] Executing Fast API Extraction (V1+V2) as fallback method for {user}...")
+            fast_filename = None
+            fast_err = ""
+            try:
+                fast_filename, fast_err = await api.execute_fallback(mgid, report_start, report_end)
+            except SessionStuckError as se:
+                logger.warning(f"  [Action] SessionStuck during fallback for {user}: {se}")
+                fast_err = f"Stuck fallback: {se}"
+                if os.path.exists(session_path):
+                    try: os.remove(session_path)
+                    except: pass
+            except Exception as e:
+                logger.error(f"  [Error] Fallback attempt failed for {user}: {e}")
+                fast_err = f"Fallback Ex: {e}"
+            
+            if fast_filename:
+                logger.info(f"  [Action] Fast API Extraction Fallback Success! Returning generated CSV.")
+                if context: await context.close()
+                if managed_browser: await managed_browser.close()
+                if p: await p.stop()
+                return fast_filename, None
+                
+            logger.warning(f"  [Action] Fallback Fast API Extraction failed for {user}: {fast_err}.")
+            last_dl_err += f" | Fallback Err: {fast_err}"
+        else:
+            logger.info(f"  [Action] Skipping fallback because session is stuck.")
+        
+        if run_attempt >= 1 and is_retry:
+            send_discord_error("Grab", user, "DOWNLOAD_FAILED", f"Gagal mengunduh laporan S3 maupun Fallback API: {last_dl_err[:200]}", "")
+            
+        # If fallback also fails, then proceed to clean up and retry whole session if possible
         if context:
             await context.close()
             
         if run_attempt < 1:
-            logger.info(f"  [Action] Refreshing session: Re-logging in after 3 download failures... (Run attempt {run_attempt + 1})")
+            logger.info(f"  [Action] Refreshing session: Re-logging in after download failure... (Run attempt {run_attempt + 1})")
             continue # Try again from auth
         else:
             if managed_browser:

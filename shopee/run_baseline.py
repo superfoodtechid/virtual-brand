@@ -445,12 +445,33 @@ def run_pipeline():
         s = str(val).strip()
         if not s or s == '-': return 0
         
-        s_cleaned = s.replace('.', '')
-        if ',' in s_cleaned:
-            s_cleaned = s_cleaned.split(',')[0]
-            
+        import re
+        s = re.sub(r'[^\d\.\,\-]', '', s)
+        if not s or s == '-': return 0
+
+        has_dot = '.' in s
+        has_comma = ',' in s
         try:
-            return int(s_cleaned)
+            if has_dot and has_comma:
+                if s.rfind(',') > s.rfind('.'):
+                    s = s.split(',')[0].replace('.', '')
+                else:
+                    s = s.split('.')[0].replace(',', '')
+                return int(s)
+            elif has_dot:
+                parts = s.split('.')
+                if len(parts[-1]) == 3:
+                    return int(s.replace('.', ''))
+                else:
+                    return int(float(s))
+            elif has_comma:
+                parts = s.split(',')
+                if len(parts[-1]) == 3:
+                    return int(s.replace(',', ''))
+                else:
+                    return int(float(s.replace(',', '.')))
+            else:
+                return int(s)
         except:
             return 0
             
@@ -470,11 +491,36 @@ def run_pipeline():
                 if sheet in xls.sheet_names:
                     df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
                     if not df.empty:
-                        for col in financial_cols.get(sheet, []):
-                            if col in df.columns:
-                                df[col] = df[col].apply(clean_shopee_monetary)
-                        df.insert(0, 'Merchant Filter Name', filename)
-                        merged_sheets[sheet].append(df)
+                        # --- Terapkan Filter Baseline pada sheet Order_Payment_Details ---
+                        if sheet in ['Order_Payment_Details', 'Order Details']:
+                            # Identify Order ID column
+                            order_col = None
+                            if "No. Pesanan" in df.columns:
+                                order_col = "No. Pesanan"
+                            elif "Order ID" in df.columns:
+                                order_col = "Order ID"
+                                
+                            if order_col:
+                                valid_id = df[order_col].fillna("").astype(str).str.strip()
+                                is_valid_order_id = valid_id.str.match(r"^[A-Za-z0-9-]+$", na=False)
+                                df = df.loc[is_valid_order_id].copy()
+                                
+                            # Identify Status column
+                            status_col = None
+                            if "Status" in df.columns:
+                                status_col = "Status"
+                            
+                            if status_col:
+                                status = df[status_col].fillna("").astype(str).str.strip().str.casefold()
+                                is_not_cancelled = ~status.str.contains("batal|cancel", na=False, case=False)
+                                df = df.loc[is_not_cancelled].copy()
+
+                        if not df.empty:
+                            for col in financial_cols.get(sheet, []):
+                                if col in df.columns:
+                                    df[col] = df[col].apply(clean_shopee_monetary)
+                            df.insert(0, 'Merchant Filter Name', filename)
+                            merged_sheets[sheet].append(df)
         except Exception as e:
             log.warning(f"⚠️ Failed to read {filename} for merging: {e}")
             

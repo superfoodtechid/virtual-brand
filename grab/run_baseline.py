@@ -60,7 +60,7 @@ log = setup_logger()
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRYSUnKOqk29LCktTxdb0wPLbWMbRaWRP3eC_UA4AwYod1FW6zDMhtLMC5ghIvot2B8upCDfBsn-TCP/pub?gid=978201567&single=true&output=csv"
 
-async def run_all(date_start: str = None, date_end: str = None, output_dir: str = None, user_filter: str = None, outlet_filter: str = None, branch_filter: str = None):
+async def run_all(date_start: str = None, date_end: str = None, output_dir: str = None, user_filter: str = None, outlet_filter: str = None, branch_filter: str = None, skip_download: bool = False):
     # Reload env just in case
     load_dotenv(override=True)
     
@@ -139,86 +139,105 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
     # Auto-cleanup old CSV files for the active portals only
     # Auto-cleanup old CSV files is disabled as per user request
     
-    from playwright.async_api import async_playwright
-    
-    async with async_playwright() as p:
-        # Load headless setting and concurrency from config.json walk-up
-        headless_env = True
-        concurrency_limit = 3
-        try:
-            import json
-            for parent in Path(__file__).resolve().parents:
-                config_file = parent / "config.json"
-                if config_file.exists():
-                    with open(config_file, "r") as f:
-                        config_data = json.load(f)
-                        headless_env = config_data.get("headless_grab", True)
-                        concurrency_limit = config_data.get("max_concurrency", 3)
-                    break
-        except Exception:
-            pass
-        browser = await p.chromium.launch(headless=headless_env)
-        semaphore = asyncio.Semaphore(concurrency_limit)
-        failures = []
-
-        async def process_user(username, info):
-            password = info["pwd"]
-            related_portals = info["portals"]
-            first_outlet = related_portals[0]["outlet"]
-            
-            async with semaphore:
-                log.info(f"[ACCOUNT] Starting for: {username} ({first_outlet})")
-                try:
-                    downloaded_file, err = await run_api_download_for_portal(
-                        username, password, 
-                        start_date=date_start, 
-                        end_date=date_end,
-                        browser=browser
-                    )
-
-                    if not downloaded_file:
-                        log.error(f"  ✗ [ACCOUNT] {username} Failed: {err}")
-                        failures.append({"user": username, "error": err, "outlets": [p["outlet"] for p in related_portals]})
-                        return
-
-                    for portal in related_portals:
-                        portal_id = portal["id"]
-                        outlet_name = f"{portal['outlet']} ({portal['branch']})"
-                        laporan_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        portal_safe_name = f"{portal['outlet']}_{portal['branch']}".replace("/", "_").replace("\\", "_")
-                        
-                        version = 1
-                        dest_xlsx = laporan_dir / f"{portal_safe_name}.xlsx"
-                        while dest_xlsx.exists():
-                            version += 1
-                            dest_xlsx = laporan_dir / f"{portal_safe_name}-{version:02d}.xlsx"
-                        
-                        try:
-                            # Convert directly to XLSX
-                            df_temp = pd.read_csv(downloaded_file, dtype=str)
-                            df_temp.to_excel(dest_xlsx, index=False)
-                            log.info(f"  ✓ [PORTAL {portal_id}] {outlet_name} — Saved to: {dest_xlsx.name}")
-                        except Exception as e:
-                            log.error(f"  ✗ [PORTAL {portal_id}] {outlet_name} — Failed to convert to excel: {e}")
-
-                except Exception as e:
-                    log.error(f"  ✗ [ACCOUNT] {username} CRITICAL ERROR: {str(e)}")
-
-        tasks = [process_user(u, info) for u, info in unique_users.items()]
-        await asyncio.gather(*tasks)
-        await browser.close()
-
-    log.info("="*60)
-    log.info("  ALL PORTALS FINISHED PROCESSING")
-    if failures:
-        log.info("-" * 60)
-        log.info(f"  FAILED ACCOUNTS ({len(failures)}):")
-        for f in failures:
-            log.info(f"  - {f['user']}: {f['error']}")
+    if skip_download:
+        log.info("⏭️ [SKIP] Bypassing browser download phase (Phases 1 & 2) as --skip-download is enabled.")
     else:
-        log.info("  ✓ ALL ACCOUNTS PROCESSED SUCCESSFULLY")
-    log.info("="*60)
+        from playwright.async_api import async_playwright
+        
+        async with async_playwright() as p:
+            # Load headless setting and concurrency from config.json walk-up
+            headless_env = True
+            concurrency_limit = 1
+            try:
+                import json
+                for parent in Path(__file__).resolve().parents:
+                    config_file = parent / "config.json"
+                    if config_file.exists():
+                        with open(config_file, "r") as f:
+                            config_data = json.load(f)
+                            headless_env = config_data.get("headless_grab", True)
+                            concurrency_limit = config_data.get("max_concurrency", 1)
+                        break
+            except Exception:
+                pass
+            browser = await p.chromium.launch(headless=headless_env)
+            semaphore = asyncio.Semaphore(concurrency_limit)
+            failures = []
+
+            async def process_user(username, info, is_retry=False):
+                password = info["pwd"]
+                related_portals = info["portals"]
+                first_outlet = related_portals[0]["outlet"]
+                
+                async with semaphore:
+                    log.info(f"[ACCOUNT] Starting for: {username} ({first_outlet})")
+                    try:
+                        downloaded_file, err = await run_api_download_for_portal(
+                            username, password, 
+                            start_date=date_start, 
+                            browser=browser,
+                            is_retry=is_retry
+                        )
+
+                        if not downloaded_file:
+                            log.error(f"  ✗ [ACCOUNT] {username} Failed: {err}")
+                            failures.append({"user": username, "error": err, "outlets": [p["outlet"] for p in related_portals]})
+                            return
+
+                        for portal in related_portals:
+                            portal_id = portal["id"]
+                            outlet_name = f"{portal['outlet']} ({portal['branch']})"
+                            laporan_dir.mkdir(parents=True, exist_ok=True)
+                            
+                            portal_safe_name = f"{portal['outlet']}_{portal['branch']}".replace("/", "_").replace("\\", "_")
+                            
+                            version = 1
+                            dest_xlsx = laporan_dir / f"{portal_safe_name}.xlsx"
+                            while dest_xlsx.exists():
+                                version += 1
+                                dest_xlsx = laporan_dir / f"{portal_safe_name}-{version:02d}.xlsx"
+                            
+                            try:
+                                # Convert directly to XLSX
+                                df_temp = pd.read_csv(downloaded_file, dtype=str)
+                                df_temp.to_excel(dest_xlsx, index=False)
+                                log.info(f"  ✓ [PORTAL {portal_id}] {outlet_name} — Saved to: {dest_xlsx.name}")
+                            except Exception as e:
+                                log.error(f"  ✗ [PORTAL {portal_id}] {outlet_name} — Failed to convert to excel: {e}")
+
+                    except Exception as e:
+                        log.error(f"  ✗ [ACCOUNT] {username} CRITICAL ERROR: {str(e)}")
+
+            tasks = [process_user(u, info) for u, info in unique_users.items()]
+            await asyncio.gather(*tasks)
+            
+            # --- Sequential Retry for Failed Accounts ---
+            if failures:
+                log.info("\n" + "="*60)
+                log.info(f"  [RETRY] Attempting to re-run {len(failures)} failed accounts sequentially to resolve network/concurrency issues...")
+                log.info("="*60)
+                
+                retry_failures = list(failures)
+                failures.clear() # Clear so it only contains true failures after retry
+                
+                for f in retry_failures:
+                    username = f["user"]
+                    info = unique_users[username]
+                    log.info(f"\n  [RETRY ACCOUNT] Re-running sequentially for: {username}")
+                    await process_user(username, info, is_retry=True)
+                    
+            await browser.close()
+
+        log.info("="*60)
+        log.info("  ALL PORTALS FINISHED PROCESSING")
+        if failures:
+            log.info("-" * 60)
+            log.info(f"  FAILED ACCOUNTS ({len(failures)}):")
+            for f in failures:
+                log.info(f"  - {f['user']}: {f['error']}")
+        else:
+            log.info("  ✓ ALL ACCOUNTS PROCESSED SUCCESSFULLY")
+        log.info("="*60)
 
     # ── Merging Phase to 0Master.xlsx ──
     log.info("📊 Merging all downloaded VB files to 0Master.xlsx...")
@@ -247,6 +266,23 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
             
     if all_data:
         master_df = pd.concat(all_data, ignore_index=True)
+        
+        # --- Terapkan Filter Baseline (Long Order ID & Status) ---
+        working = master_df.copy()
+        if "Long Order ID" in working.columns:
+            valid_long_id = working["Long Order ID"].astype(str).str.strip()
+            is_valid_order_id = (valid_long_id != "") & valid_long_id.str.contains(r'[^A-Za-z0-9]', regex=True, na=False)
+        else:
+            is_valid_order_id = pd.Series(True, index=working.index)
+            
+        if "Status" in working.columns:
+            working["Status"] = working["Status"].fillna("").astype(str).str.strip().str.casefold()
+            is_not_cancelled = working["Status"].ne("cancelled")
+        else:
+            is_not_cancelled = pd.Series(True, index=working.index)
+            
+        master_df = working.loc[is_valid_order_id & is_not_cancelled].copy()
+        
         master_xlsx = laporan_dir / "0Master.xlsx"
         version = 1
         while master_xlsx.exists():
@@ -295,6 +331,11 @@ if __name__ == "__main__":
         default=None,
         help="Filter specific branch name to run.",
     )
+    parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip browser automation and only process/merge raw files.",
+    )
     args = parser.parse_args()
     asyncio.run(run_all(
         date_start=args.start_date, 
@@ -302,5 +343,6 @@ if __name__ == "__main__":
         output_dir=args.output_dir, 
         user_filter=args.user,
         outlet_filter=args.outlet,
-        branch_filter=args.branch
+        branch_filter=args.branch,
+        skip_download=args.skip_download
     ))
